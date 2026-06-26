@@ -126,7 +126,7 @@ function addPair() {
 
 function deletePair(id) {
     if (!confirm('确定删除？')) return;
-    fetch('/finetune/api/training-pairs/${id}', {method: 'DELETE'})
+    fetch('/finetune/api/training-pairs/' + id, {method: 'DELETE'})
         .then(() => location.reload());
 }
 

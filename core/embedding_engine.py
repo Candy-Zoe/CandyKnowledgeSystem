@@ -41,7 +41,11 @@ class BM25:
 
     def search(self, query, top_k=5):
         query_tokens = self._tokenize(query)
+        if not query_tokens or not self.doc_freqs:
+            return []
+
         scores = []
+        avg_len = self.avg_doc_len if self.avg_doc_len > 0 else 1
 
         for i, doc_freq in enumerate(self.doc_freqs):
             score = 0
@@ -51,7 +55,7 @@ class BM25:
                     tf = doc_freq[token]
                     idf = self.idf.get(token, 0)
                     numerator = tf * (self.k1 + 1)
-                    denominator = tf + self.k1 * (1 - self.b + self.b * doc_len / self.avg_doc_len)
+                    denominator = tf + self.k1 * (1 - self.b + self.b * doc_len / avg_len)
                     score += idf * numerator / denominator
             scores.append((i, score))
 

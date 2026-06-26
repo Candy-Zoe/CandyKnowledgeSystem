@@ -16,6 +16,9 @@ class DatabaseManager:
         conn.execute("PRAGMA foreign_keys=ON")
         cursor = conn.cursor()
         cursor.executescript(SCHEMA)
+        has_default_kb = cursor.execute("SELECT COUNT(*) FROM knowledge_bases WHERE id=1").fetchone()[0]
+        if not has_default_kb:
+            cursor.execute("INSERT OR IGNORE INTO knowledge_bases (id, name, description) VALUES (1, '默认知识库', '默认知识库')")
         conn.commit()
         conn.close()
 
@@ -589,6 +592,7 @@ CREATE TABLE IF NOT EXISTS finetune_jobs (
     lora_rank INTEGER,
     output_path TEXT,
     metrics TEXT,
+    error_message TEXT,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

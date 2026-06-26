@@ -29,20 +29,6 @@ def extract_text():
     file.save(file_path)
 
     try:
-        import fitz
-        doc = fitz.open(file_path)
-        text = ""
-        for page in doc:
-            text += page.get_text()
-        doc.close()
-
-        if text.strip():
-            db.save_ocr_result(file_path, text)
-            return jsonify({"text": text, "message": "文字提取成功"})
-    except Exception:
-        pass
-
-    try:
         from PIL import Image
         import pytesseract
         img = Image.open(file_path)
@@ -55,7 +41,7 @@ def extract_text():
     except Exception:
         pass
 
-    return jsonify({"text": "", "message": "未能提取文字，请确保图片清晰或安装pytesseract"})
+    return jsonify({"text": "", "message": "未能识别文字，请安装pytesseract: pip install pytesseract"})
 
 
 @ocr_bp.route("/api/history", methods=["GET"])
