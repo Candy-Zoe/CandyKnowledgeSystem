@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+{% block title %}参数设置 - Candy知识库{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h2>参数设置</h2>
+</div>
+
+<div class="section">
+    <h3>模型来源</h3>
+    <div class="form-card">
+        <div class="radio-group">
+            <label class="radio-label">
+                <input type="radio" name="modelSource" value="local" {{ 'checked' if settings.model_source=='local' }} onchange="toggleModelSource()">
+                本地模型（微调模型 / 自定义模型）
+            </label>
+            <label class="radio-label">
+                <input type="radio" name="modelSource" value="api" {{ 'checked' if settings.model_source=='api' }} onchange="toggleModelSource()">
+                外部API（千问 / OpenAI / DeepSeek等）
+            </label>
+        </div>
+
+        <div id="localModelSection" class="sub-section" style="display:{{ 'block' if settings.model_source=='local' else 'none' }}">
+            <label>本地模型路径:
+                <input type="text" id="localModelPath" value="{{ settings.local_model_path }}" class="input-full" placeholder="留空则使用默认微调模型">
+            </label>
+            <p class="hint">可指定微调模型或自定义模型的路径，留空自动使用最新的微调模型</p>
+        </div>
+
+        <div id="apiModelSection" class="sub-section" style="display:{{ 'none' if settings.model_source=='local' else 'block' }}">
+            <label>API服务商:
+                <select id="apiProvider" class="input-full" onchange="updateApiModels()">
+                    {% for p in providers %}
+                    <option value="{{ p.id }}" {{ 'selected' if settings.api_provider==p.id }}>{{ p.name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label>API Key:
+                <input type="password" id="apiKey" value="{{ settings.api_key }}" class="input-full" placeholder="输入你的API Key">
+            </label>
+
+            <label>模型:
+                <select id="apiModel" class="input-full">
+                </select>
+            </label>
+
+            <label>自定义Base URL（可选）:
+                <input type="text" id="apiBaseUrl" value="{{ settings.api_base_url }}" class="input-full" placeholder="留空使用默认地址">
+            </label>
+
+            <button class="btn btn-primary" onclick="testApiConnection()">测试连接</button>
+            <span id="apiTestResult" class="hint"></span>
+        </div>
+    </div>
+</div>
+
+<div class="section">
+    <h3>分块设置</h3>
+    <div class="form-card">
+        <label>分块策略:
+            <select id="chunkStrategy" class="input-full">
+                <option value="semantic" {{ 'selected' if settings.chunk_strategy=='semantic' }}>语义边界分块</option>
+                <option value="recursive" {{ 'selected' if settings.chunk_strategy=='recursive' }}>递归分块</option>
+                <option value="paragraph" {{ 'selected' if settings.chunk_strategy=='paragraph' }}>段落感知分块</option>
+                <option value="sentence" {{ 'selected' if settings.chunk_strategy=='sentence' }}>句子级分块</option>
+                <option value="fixed" {{ 'selected' if settings.chunk_strategy=='fixed' }}>固定大小分块</option>
+            </select>
+        </label>
+        <label>分块大小 (tokens): <input type="number" id="chunkSize" value="{{ settings.chunk_size }}" min="64" max="2048"></label>
+        <label>重叠大小 (tokens): <input type="number" id="chunkOverlap" value="{{ settings.chunk_overlap }}" min="0" max="256"></label>
+    </div>
+</div>
+
+<div class="section">
+    <h3>检索设置</h3>
+    <div class="form-card">
+        <label>检索模式:
+            <select id="retrievalMode" class="input-full">
+                <option value="hybrid" {{ 'selected' if settings.retrieval_mode=='hybrid' }}>混合检索（推荐）</option>
+                <option value="vector" {{ 'selected' if settings.retrieval_mode=='vector' }}>纯向量检索</option>
+                <option value="bm25" {{ 'selected' if settings.retrieval_mode=='bm25' }}>BM25关键词检索</option>
+            </select>
+        </label>
+        <label>向量权重: <input type="number" id="vectorWeight" value="{{ settings.vector_weight }}" min="0" max="1" step="0.1"></label>
+        <label>BM25权重: <input type="number" id="bm25Weight" value="{{ settings.bm25_weight }}" min="0" max="1" step="0.1"></label>
+        <label>返回数量 (Top K): <input type="number" id="topK" value="{{ settings.top_k }}" min="1" max="20"></label>
+        <label>相似度阈值: <input type="number" id="similarityThreshold" value="{{ settings.similarity_threshold }}" min="0" max="1" step="0.05"></label>
+    </div>
+</div>
+
+<div class="section">
+    <h3>生成设置</h3>
+    <div class="form-card">
+        <label>Temperature: <input type="number" id="temperature" value="{{ settings.temperature }}" min="0" max="2" step="0.1"></label>
+        <label>最大Token数: <input type="number" id="maxTokens" value="{{ settings.max_tokens }}" min="64" max="4096"></label>
+    </div>
+</div>
+
+<div class="section">
+    <h3>嵌入模型</h3>
+    <div class="form-card">
+        <label>嵌入模型:
+            <select id="embeddingModel" class="input-full">
+                <option value="BAAI/bge-small-zh-v1.5" {{ 'selected' if settings.embedding_model=='BAAI/bge-small-zh-v1.5' }}>BGE-small-zh (512维, 推荐)</option>
+                <option value="BAAI/bge-base-zh-v1.5" {{ 'selected' if settings.embedding_model=='BAAI/bge-base-zh-v1.5' }}>BGE-base-zh (768维)</option>
+                <option value="BAAI/bge-large-zh-v1.5" {{ 'selected' if settings.embedding_model=='BAAI/bge-large-zh-v1.5' }}>BGE-large-zh (1024维)</option>
+            </select>
+        </label>
+        <p class="hint">修改嵌入模型后需要重新处理已有文档</p>
+    </div>
+</div>
+
+<div class="actions" style="justify-content: flex-end;">
+    <button class="btn btn-primary" onclick="saveSettings()">保存设置</button>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const providersData = {{ providers | tojson }};
+const currentSettings = {{ settings | tojson }};
+
+function toggleModelSource() {
+    const source = document.querySelector('input[name="modelSource"]:checked').value;
+    document.getElementById('localModelSection').style.display = source === 'local' ? 'block' : 'none';
+    document.getElementById('apiModelSection').style.display = source === 'api' ? 'block' : 'none';
+}
+
+function updateApiModels() {
+    const provider = document.getElementById('apiProvider').value;
+    const info = providersData.find(p => p.id === provider);
+    const select = document.getElementById('apiModel');
+    select.innerHTML = '';
+    if (info && info.models) {
+        info.models.forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m;
+            opt.textContent = m;
+            if (m === currentSettings.api_model) opt.selected = true;
+            select.appendChild(opt);
+        });
+    }
+}
+
+function testApiConnection() {
+    const result = document.getElementById('apiTestResult');
+    result.textContent = '测试中...';
+    result.style.color = '#666';
+
+    fetch('/settings/api/test-api', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            provider: document.getElementById('apiProvider').value,
+            api_key: document.getElementById('apiKey').value,
+            base_url: document.getElementById('apiBaseUrl').value,
+            model: document.getElementById('apiModel').value,
+        })
+    }).then(r => r.json()).then(d => {
+        if (d.error) {
+            result.textContent = d.error;
+            result.style.color = '#e74c3c';
+        } else {
+            result.textContent = '连接成功: ' + d.response;
+            result.style.color = '#27ae60';
+        }
+    });
+}
+
+function saveSettings() {
+    const data = {
+        model_source: document.querySelector('input[name="modelSource"]:checked').value,
+        local_model_path: document.getElementById('localModelPath').value,
+        api_provider: document.getElementById('apiProvider').value,
+        api_key: document.getElementById('apiKey').value,
+        api_model: document.getElementById('apiModel').value,
+        api_base_url: document.getElementById('apiBaseUrl').value,
+        chunk_strategy: document.getElementById('chunkStrategy').value,
+        chunk_size: parseInt(document.getElementById('chunkSize').value),
+        chunk_overlap: parseInt(document.getElementById('chunkOverlap').value),
+        retrieval_mode: document.getElementById('retrievalMode').value,
+        vector_weight: parseFloat(document.getElementById('vectorWeight').value),
+        bm25_weight: parseFloat(document.getElementById('bm25Weight').value),
+        top_k: parseInt(document.getElementById('topK').value),
+        similarity_threshold: parseFloat(document.getElementById('similarityThreshold').value),
+        embedding_model: document.getElementById('embeddingModel').value,
+        temperature: parseFloat(document.getElementById('temperature').value),
+        max_tokens: parseInt(document.getElementById('maxTokens').value),
+    };
+
+    fetch('/settings/api/save', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    }).then(r => r.json()).then(d => {
+        alert(d.message || d.error);
+    });
+}
+
+updateApiModels();
+</script>
+{% endblock %}

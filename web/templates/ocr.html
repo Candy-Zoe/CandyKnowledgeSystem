@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}图片OCR - Candy知识库{% endblock %}
+{% block content %}
+<div class="page-header"><h2>图片文字提取</h2></div>
+<div class="section">
+    <h3>上传图片</h3>
+    <input type="file" id="imageInput" accept="image/*" class="input-full">
+    <button class="btn btn-primary" onclick="extractText()" style="margin-top:10px;">提取文字</button>
+</div>
+<div class="section">
+    <h3>识别结果</h3>
+    <pre id="ocrResult" style="white-space:pre-wrap;min-height:100px;background:#f8f8f8;padding:15px;border-radius:8px;"></pre>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function extractText() {
+    const file = document.getElementById('imageInput').files[0];
+    if (!file) { alert('请选择图片'); return; }
+    const formData = new FormData();
+    formData.append('image', file);
+    document.getElementById('ocrResult').textContent = '识别中...';
+    fetch('/ocr/api/extract', {method:'POST', body:formData}).then(r=>r.json()).then(d=>{
+        document.getElementById('ocrResult').textContent = d.text || d.message;
+    });
+}
+</script>
+{% endblock %}

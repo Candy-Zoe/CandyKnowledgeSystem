@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}文档摘要 - Candy知识库{% endblock %}
+{% block content %}
+<div class="page-header"><h2>文档摘要</h2></div>
+<table class="doc-table">
+    <thead><tr><th>文档名</th><th>摘要</th><th>操作</th></tr></thead>
+    <tbody>
+        {% for doc in documents %}
+        <tr>
+            <td>{{ doc.original_name }}</td>
+            <td id="sum-{{ doc.id }}">{{ summaries.get(doc.id, '未生成')[:100] }}</td>
+            <td><button class="btn btn-primary btn-sm" onclick="genSummary({{ doc.id }})">生成摘要</button></td>
+        </tr>
+        {% endfor %}
+        {% if not documents %}<tr><td colspan="3" class="empty">暂无文档</td></tr>{% endif %}
+    </tbody>
+</table>
+{% endblock %}
+{% block scripts %}
+<script>
+function genSummary(id) {
+    document.getElementById('sum-'+id).textContent = '生成中...';
+    fetch('/summary/api/generate/'+id, {method:'POST'}).then(r=>r.json()).then(d=>{
+        document.getElementById('sum-'+id).textContent = d.summary || d.error;
+    });
+}
+</script>
+{% endblock %}

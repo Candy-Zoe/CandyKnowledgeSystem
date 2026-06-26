@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}定时任务 - Candy知识库{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h2>定时任务</h2>
+    <button class="btn btn-primary" onclick="createTask()">新建任务</button>
+</div>
+<table class="doc-table">
+    <thead><tr><th>名称</th><th>文件夹</th><th>间隔(分钟)</th><th>状态</th><th>上次运行</th><th>操作</th></tr></thead>
+    <tbody>
+        {% for t in tasks %}
+        <tr>
+            <td>{{ t.name }}</td>
+            <td>{{ t.folder_path }}</td>
+            <td>{{ t.interval_minutes }}</td>
+            <td><span class="status {{ 'status-completed' if t.id in running else 'status-queued' }}">{{ '运行中' if t.id in running else '已停止' }}</span></td>
+            <td>{{ t.last_run or '未运行' }}</td>
+            <td>
+                {% if t.id not in running %}
+                <button class="btn btn-sm" onclick="startTask({{ t.id }})">启动</button>
+                {% else %}
+                <button class="btn btn-danger btn-sm" onclick="stopTask({{ t.id }})">停止</button>
+                {% endif %}
+                <button class="btn btn-danger btn-sm" onclick="deleteTask({{ t.id }})">删除</button>
+            </td>
+        </tr>
+        {% endfor %}
+        {% if not tasks %}<tr><td colspan="6" class="empty">暂无定时任务</td></tr>{% endif %}
+    </tbody>
+</table>
+{% endblock %}
+{% block scripts %}
+<script>
+function createTask() {
+    const name = prompt("任务名称:");
+    const folder = prompt("监控文件夹路径:");
+    const interval = prompt("检查间隔(分钟):", "60");
+    if (!name || !folder) return;
+    fetch('/scheduler/api/create', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name, folder_path:folder, interval_minutes:parseInt(interval)})})
+        .then(r=>r.json()).then(()=>location.reload());
+}
+function startTask(id) { fetch('/scheduler/api/'+id+'/start', {method:'POST'}).then(()=>location.reload()); }
+function stopTask(id) { fetch('/scheduler/api/'+id+'/stop', {method:'POST'}).then(()=>location.reload()); }
+function deleteTask(id) { if(!confirm('确定删除?'))return; fetch('/scheduler/api/'+id, {method:'DELETE'}).then(()=>location.reload()); }
+</script>
+{% endblock %}

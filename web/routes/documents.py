@@ -109,3 +109,24 @@ def import_data():
         return jsonify({"message": "导入成功"})
     else:
         return jsonify({"error": "仅支持JSON格式导入"}), 400
+
+
+@documents_bp.route("/api/chunks/<int:chunk_id>", methods=["GET"])
+def get_chunk_content(chunk_id):
+    conn = db.get_connection()
+    row = conn.execute(
+        """SELECT c.*, d.original_name FROM chunks c
+        JOIN documents d ON c.document_id=d.id WHERE c.id=?""",
+        (chunk_id,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "分块不存在"}), 404
+    return jsonify({
+        "id": row["id"],
+        "document_id": row["document_id"],
+        "document_name": row["original_name"],
+        "chunk_index": row["chunk_index"],
+        "content": row["content"],
+        "token_count": row["token_count"],
+    })

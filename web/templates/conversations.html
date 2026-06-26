@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}对话管理 - Candy知识库{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h2>对话管理</h2>
+    <button class="btn btn-primary" onclick="createConv()">新建对话</button>
+</div>
+<table class="doc-table">
+    <thead><tr><th>标题</th><th>消息数</th><th>更新时间</th><th>操作</th></tr></thead>
+    <tbody>
+        {% for c in conversations %}
+        <tr>
+            <td><a href="/conversations/api/{{ c.id }}">{{ c.title }}</a></td>
+            <td>-</td>
+            <td>{{ c.updated_at }}</td>
+            <td>
+                <a href="/conversations/api/{{ c.id }}/export" class="btn btn-sm">导出</a>
+                <button class="btn btn-danger btn-sm" onclick="deleteConv({{ c.id }})">删除</button>
+            </td>
+        </tr>
+        {% endfor %}
+        {% if not conversations %}<tr><td colspan="4" class="empty">暂无对话</td></tr>{% endif %}
+    </tbody>
+</table>
+{% endblock %}
+{% block scripts %}
+<script>
+function createConv() {
+    const title = prompt("对话标题:");
+    if (!title) return;
+    fetch('/conversations/api/create', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title})})
+        .then(r=>r.json()).then(()=>location.reload());
+}
+function deleteConv(id) {
+    if (!confirm('确定删除?')) return;
+    fetch('/conversations/api/'+id, {method:'DELETE'}).then(()=>location.reload());
+}
+</script>
+{% endblock %}

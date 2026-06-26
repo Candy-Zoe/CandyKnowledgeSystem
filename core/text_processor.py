@@ -1,4 +1,5 @@
 import re
+import math
 import tiktoken
 
 
@@ -7,9 +8,11 @@ class TextProcessor:
         "fixed": "固定大小分块",
         "paragraph": "段落感知分块",
         "semantic": "语义边界分块",
+        "recursive": "递归分块",
+        "sentence": "句子级分块",
     }
 
-    def __init__(self, chunk_size=512, chunk_overlap=64, strategy="paragraph"):
+    def __init__(self, chunk_size=512, chunk_overlap=64, strategy="semantic"):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.strategy = strategy
@@ -19,12 +22,34 @@ class TextProcessor:
         return len(self.tokenizer.encode(text))
 
     def chunk_text(self, text: str) -> list:
-        if self.strategy == "semantic":
-            return self._chunk_semantic(text)
-        elif self.strategy == "fixed":
-            return self._chunk_fixed(text)
-        else:
-            return self._chunk_paragraph(text)
+        strategies = {
+            "fixed": self._chunk_fixed,
+            "paragraph": self._chunk_paragraph,
+            "semantic": self._chunk_semantic,
+            "recursive": self._chunk_recursive,
+            "sentence": self._chunk_sentence,
+        }
+        func = strategies.get(self.strategy, self._chunk_semantic)
+        return func(text)
+
+    def _chunk_fixed(self, text: str) -> list:
+        tokens = self.tokenizer.encode(text)
+        chunks = []
+        start = 0
+        while start < len(tokens):
+            end = min(start + self.chunk_size, len(tokens))
+            chunk_tokens = tokens[start:end]
+            chunk_text = self.tokenizer.decode(chunk_tokens)
+            chunks.append({
+                "content": chunk_text,
+                "token_count": len(chunk_tokens)
+            })
+            start = end - self.chunk_overlap
+            if start >= len(tokens):
+                break
+        for i, chunk in enumerate(chunks):
+            chunk["chunk_index"] = i
+        return chunks
 
     def _chunk_paragraph(self, text: str) -> list:
         paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
@@ -60,27 +85,8 @@ class TextProcessor:
             chunk["chunk_index"] = i
         return chunks
 
-    def _chunk_fixed(self, text: str) -> list:
-        tokens = self.tokenizer.encode(text)
-        chunks = []
-        start = 0
-        while start < len(tokens):
-            end = min(start + self.chunk_size, len(tokens))
-            chunk_tokens = tokens[start:end]
-            chunk_text = self.tokenizer.decode(chunk_tokens)
-            chunks.append({
-                "content": chunk_text,
-                "token_count": len(chunk_tokens)
-            })
-            start = end - self.chunk_overlap
-            if start >= len(tokens):
-                break
-        for i, chunk in enumerate(chunks):
-            chunk["chunk_index"] = i
-        return chunks
-
     def _chunk_semantic(self, text: str) -> list:
-        sections = re.split(r'\n(?=#{1,6}\s|\[第?\d+页\]|\[表格\])', text)
+        sections = re.split(r'\n(?=#{1,6}\s|\[第?\d+页\]|\[表格\]|\[工作表)', text)
         sections = [s.strip() for s in sections if s.strip()]
 
         chunks = []
@@ -123,6 +129,96 @@ class TextProcessor:
             chunk["chunk_index"] = i
         return chunks
 
+    def _chunk_recursive(self, text: str) -> list:
+        separators = ["\n\n", "\n", "。", ".", "！", "!", "？", "?", "；", ";", " "]
+        return self._recursive_split(text, separators)
+
+    def _recursive_split(self, text: str, separators: list) -> list:
+        if not separators:
+            return self._chunk_fixed(text)
+
+        sep = separators[0]
+        remaining_seps = separators[1:]
+
+        parts = text.split(sep)
+        chunks = []
+        current = ""
+        current_count = 0
+
+        for part in parts:
+            part_text = part.strip()
+            if not part_text:
+                continue
+
+            part_tokens = self.tokenizer.encode(part_text)
+            part_count = len(part_tokens)
+
+            if current_count + part_count > self.chunk_size and current:
+                if current_count <= self.chunk_size:
+                    chunks.append({
+                        "content": current,
+                        "token_count": current_count
+                    })
+                else:
+                    sub_chunks = self._recursive_split(current, remaining_seps)
+                    chunks.extend(sub_chunks)
+                current = ""
+                current_count = 0
+
+            current = (current + sep + part_text).strip() if current else part_text
+            current_count += part_count
+
+        if current:
+            if current_count <= self.chunk_size:
+                chunks.append({
+                    "content": current,
+                    "token_count": current_count
+                })
+            else:
+                sub_chunks = self._recursive_split(current, remaining_seps)
+                chunks.extend(sub_chunks)
+
+        for i, chunk in enumerate(chunks):
+            chunk["chunk_index"] = i
+        return chunks
+
+    def _chunk_sentence(self, text: str) -> list:
+        sentence_endings = r'(?<=[。！？\.\!\?])\s*'
+        sentences = re.split(sentence_endings, text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        chunks = []
+        current_sentences = []
+        current_count = 0
+
+        for sent in sentences:
+            sent_tokens = self.tokenizer.encode(sent)
+            sent_count = len(sent_tokens)
+
+            if current_count + sent_count > self.chunk_size and current_sentences:
+                chunk_text = " ".join(current_sentences)
+                chunks.append({
+                    "content": chunk_text,
+                    "token_count": current_count
+                })
+                overlap_sents = current_sentences[-max(1, len(current_sentences)//4):]
+                current_sentences = overlap_sents
+                current_count = sum(len(self.tokenizer.encode(s)) for s in current_sentences)
+
+            current_sentences.append(sent)
+            current_count += sent_count
+
+        if current_sentences:
+            chunk_text = " ".join(current_sentences)
+            chunks.append({
+                "content": chunk_text,
+                "token_count": current_count
+            })
+
+        for i, chunk in enumerate(chunks):
+            chunk["chunk_index"] = i
+        return chunks
+
     def extract_keywords(self, text: str, top_n=10) -> list:
         words = re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z]+', text)
         freq = {}
@@ -153,7 +249,7 @@ class TextProcessor:
 
             if len(sentences) >= 2:
                 pairs.append({
-                    "question": f"关于{sentences[0][:30]}，主要讲了什么？",
+                    "question": "关于%s，主要讲了什么？" % sentences[0][:30],
                     "answer": "。".join(sentences[:2]) + "。",
                     "source_chunk_ids": [chunk.get("id")]
                 })
@@ -162,17 +258,22 @@ class TextProcessor:
             if keywords:
                 kw = "、".join(keywords[:3])
                 pairs.append({
-                    "question": f"请解释{kw}的相关内容",
+                    "question": "请解释%s的相关内容" % kw,
                     "answer": summary_a,
                     "source_chunk_ids": [chunk.get("id")]
                 })
 
             if len(sentences) >= 4:
-                detail_q = f"请详细说明{sentences[0][:20]}的具体内容"
-                detail_a = "。".join(sentences[:5]) + "。"
                 pairs.append({
-                    "question": detail_q,
-                    "answer": detail_a,
+                    "question": "请详细说明%s的具体内容" % sentences[0][:20],
+                    "answer": "。".join(sentences[:5]) + "。",
+                    "source_chunk_ids": [chunk.get("id")]
+                })
+
+            if len(sentences) >= 3:
+                pairs.append({
+                    "question": "这段内容的核心观点是什么？",
+                    "answer": "。".join(sentences[:2]) + "。",
                     "source_chunk_ids": [chunk.get("id")]
                 })
 

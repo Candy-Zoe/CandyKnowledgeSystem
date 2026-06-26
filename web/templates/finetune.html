@@ -3,7 +3,20 @@
 {% block content %}
 <div class="page-header">
     <h2>模型微调</h2>
-    <p>管理训练数据，启动微调任务</p>
+    <p>用你的数据训练专属AI模型</p>
+</div>
+
+<div class="section">
+    <h3>使用流程</h3>
+    <div class="flow-steps">
+        <div class="step"><span class="step-num">1</span>上传文档</div>
+        <div class="step-arrow">→</div>
+        <div class="step"><span class="step-num">2</span>生成训练数据</div>
+        <div class="step-arrow">→</div>
+        <div class="step"><span class="step-num">3</span>微调模型</div>
+        <div class="step-arrow">→</div>
+        <div class="step"><span class="step-num">4</span>加载模型问答</div>
+    </div>
 </div>
 
 <div class="section">
@@ -29,42 +42,52 @@
             <tr>
                 <td>{{ pair.question[:50] }}{% if pair.question|length > 50 %}...{% endif %}</td>
                 <td>{{ pair.answer[:50] }}{% if pair.answer|length > 50 %}...{% endif %}</td>
-                <td>{{ "自动生成" if pair.is_generated else "手动添加" }}</td>
+                <td>{{ "自动" if pair.is_generated else "手动" }}</td>
                 <td><button class="btn btn-danger btn-sm" onclick="deletePair({{ pair.id }})">删除</button></td>
             </tr>
             {% endfor %}
             {% if not pairs %}
-            <tr><td colspan="4" class="empty">暂无训练数据</td></tr>
+            <tr><td colspan="4" class="empty">暂无训练数据，请先上传文档并点击「自动生成」</td></tr>
             {% endif %}
         </tbody>
     </table>
-    <p>共 {{ pairs|length }} 条训练数据</p>
+    <p>共 {{ pairs|length }} 条训练数据（至少需要5条才能开始训练）</p>
 </div>
 
 <div class="section">
     <h3>启动微调</h3>
+    <div id="trainingProgress" style="display:none;" class="progress-card">
+        <div class="progress-status" id="progressStatus">准备中...</div>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+    </div>
     <div class="form-card">
         <label>模型名称: <input type="text" id="modelName" value="my_model" class="input-full"></label>
         <label>基础模型: <input type="text" id="baseModel" value="Qwen/Qwen2-1.5B" class="input-full"></label>
         <label>训练轮数: <input type="number" id="epochs" value="3" min="1" max="10"></label>
         <label>LoRA Rank: <input type="number" id="loraRank" value="16" min="4" max="64"></label>
-        <button class="btn btn-primary" onclick="startFinetune()">开始微调</button>
+        <button class="btn btn-primary" id="trainBtn" onclick="startFinetune()">开始微调</button>
+        <p class="hint">首次训练需下载基础模型(约3GB)，请耐心等待</p>
     </div>
 </div>
 
 <div class="section">
-    <h3>微调任务</h3>
+    <h3>已训练的模型</h3>
+    <div id="modelsList"></div>
+</div>
+
+<div class="section">
+    <h3>微调任务记录</h3>
     <table class="doc-table">
         <thead>
-            <tr><th>模型名</th><th>基础模型</th><th>样本数</th><th>状态</th><th>创建时间</th></tr>
+            <tr><th>模型名</th><th>样本数</th><th>状态</th><th>进度</th><th>创建时间</th></tr>
         </thead>
         <tbody>
             {% for job in jobs %}
             <tr>
                 <td>{{ job.model_name }}</td>
-                <td>{{ job.base_model }}</td>
                 <td>{{ job.training_samples }}</td>
                 <td><span class="status status-{{ job.status }}">{{ job.status }}</span></td>
+                <td>{{ job.metrics or '-' }}</td>
                 <td>{{ job.created_at }}</td>
             </tr>
             {% endfor %}
@@ -78,14 +101,18 @@
 
 {% block scripts %}
 <script>
+let pollTimer = null;
+
 function generatePairs() {
     if (!confirm('将根据已有文档自动生成训练数据，继续？')) return;
     fetch('/finetune/api/generate-pairs', {method: 'POST'})
         .then(r => r.json())
         .then(data => { alert(data.message); location.reload(); });
 }
+
 function showAddPair() { document.getElementById('addPairForm').style.display = 'block'; }
 function hideAddPair() { document.getElementById('addPairForm').style.display = 'none'; }
+
 function addPair() {
     const q = document.getElementById('pairQuestion').value.trim();
     const a = document.getElementById('pairAnswer').value.trim();
@@ -96,11 +123,13 @@ function addPair() {
         body: JSON.stringify({question: q, answer: a})
     }).then(r => r.json()).then(() => location.reload());
 }
+
 function deletePair(id) {
     if (!confirm('确定删除？')) return;
-    fetch(`/finetune/api/training-pairs/${id}`, {method: 'DELETE'})
+    fetch('/finetune/api/training-pairs/${id}', {method: 'DELETE'})
         .then(() => location.reload());
 }
+
 function startFinetune() {
     const data = {
         model_name: document.getElementById('modelName').value,
@@ -108,14 +137,75 @@ function startFinetune() {
         epochs: parseInt(document.getElementById('epochs').value),
         lora_rank: parseInt(document.getElementById('loraRank').value)
     };
+    document.getElementById('trainBtn').disabled = true;
+    document.getElementById('trainBtn').textContent = '训练中...';
+    document.getElementById('trainingProgress').style.display = 'block';
+
     fetch('/finetune/api/start', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(data)
     }).then(r => r.json()).then(d => {
-        if (d.error) alert(d.error);
-        else { alert('微调任务已创建: ' + d.job_id); location.reload(); }
+        if (d.error) {
+            alert(d.error);
+            document.getElementById('trainBtn').disabled = false;
+            document.getElementById('trainBtn').textContent = '开始微调';
+            document.getElementById('trainingProgress').style.display = 'none';
+        } else {
+            pollTrainingStatus();
+        }
     });
 }
+
+function pollTrainingStatus() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(() => {
+        fetch('/finetune/api/status').then(r => r.json()).then(data => {
+            document.getElementById('progressStatus').textContent = data.progress || '处理中...';
+            if (data.error) {
+                document.getElementById('progressStatus').textContent = '错误: ' + data.error;
+                document.getElementById('trainBtn').disabled = false;
+                document.getElementById('trainBtn').textContent = '开始微调';
+                clearInterval(pollTimer);
+            } else if (!data.running && data.progress.includes('完成')) {
+                document.getElementById('progressStatus').textContent = '训练完成！';
+                document.getElementById('trainBtn').disabled = false;
+                document.getElementById('trainBtn').textContent = '开始微调';
+                clearInterval(pollTimer);
+                loadModels();
+            }
+        });
+    }, 2000);
+}
+
+function loadModels() {
+    fetch('/finetune/api/models').then(r => r.json()).then(models => {
+        const container = document.getElementById('modelsList');
+        if (models.length === 0) {
+            container.innerHTML = '<p class="empty">暂无已训练的模型</p>';
+            return;
+        }
+        container.innerHTML = models.map(m => `
+            <div class="model-card">
+                <span class="model-name">${m.name}</span>
+                <button class="btn btn-primary btn-sm" onclick="loadModel('${m.path}')">加载到问答</button>
+            </div>
+        `).join('');
+    });
+}
+
+function loadModel(path) {
+    fetch('/qa/api/model/load', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({model_path: path})
+    }).then(r => r.json()).then(d => {
+        if (d.error) alert(d.error);
+        else { alert('模型已加载！现在可以去问答页面使用了'); }
+    });
+}
+
+loadModels();
+pollTrainingStatus();
 </script>
 {% endblock %}
