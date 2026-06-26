@@ -222,6 +222,66 @@ class DatabaseManager:
         conn.commit()
         conn.close()
 
+    def search_chunks(self, keyword: str, doc_id=None) -> list:
+        conn = self.get_connection()
+        try:
+            if doc_id:
+                rows = conn.execute(
+                    """SELECT c.*, d.original_name FROM chunks c
+                    JOIN documents d ON c.document_id=d.id
+                    WHERE c.id IN (SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?) AND c.document_id=?
+                    ORDER BY c.chunk_index""",
+                    (keyword, doc_id)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT c.*, d.original_name FROM chunks c
+                    JOIN documents d ON c.document_id=d.id
+                    WHERE c.id IN (SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?)
+                    ORDER BY c.document_id, c.chunk_index""",
+                    (keyword,)
+                ).fetchall()
+        except Exception:
+            if doc_id:
+                rows = conn.execute(
+                    "SELECT c.*, d.original_name FROM chunks c JOIN documents d ON c.document_id=d.id WHERE c.content LIKE ? AND c.document_id=? ORDER BY c.chunk_index",
+                    (f"%{keyword}%", doc_id)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT c.*, d.original_name FROM chunks c JOIN documents d ON c.document_id=d.id WHERE c.content LIKE ? ORDER BY c.document_id, c.chunk_index",
+                    (f"%{keyword}%",)
+                ).fetchall()
+        conn.close()
+        result = []
+        for r in rows:
+            d = dict(r)
+            if d["embedding"]:
+                d["embedding"] = np.frombuffer(d["embedding"], dtype=np.float32)
+            result.append(d)
+        return result
+
+    def get_document_content(self, doc_id) -> str:
+        chunks = self.get_chunks_by_document(doc_id)
+        return "\n\n".join([c["content"] for c in chunks])
+
+    def get_stats(self) -> dict:
+        conn = self.get_connection()
+        doc_count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+        chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        pair_count = conn.execute("SELECT COUNT(*) FROM training_pairs").fetchone()[0]
+        completed = conn.execute("SELECT COUNT(*) FROM documents WHERE status='completed'").fetchone()[0]
+        total_size = conn.execute("SELECT COALESCE(SUM(file_size), 0) FROM documents").fetchone()[0]
+        conn.close()
+        return {
+            "document_count": doc_count,
+            "chunk_count": chunk_count,
+            "training_pair_count": pair_count,
+            "completed_documents": completed,
+            "total_size_bytes": total_size,
+            "total_size_mb": round(total_size / (1024 * 1024), 2)
+        }
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -279,4 +339,16 @@ CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks(id);
 CREATE INDEX IF NOT EXISTS idx_training_pairs_document_id ON training_pairs(document_id);
 CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(content, document_id, content=chunks, content_rowid=id);
+CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+    INSERT INTO chunks_fts(rowid, content, document_id) VALUES (new.id, new.content, new.document_id);
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+    INSERT INTO chunks_fts(chunks_fts, rowid, content, document_id) VALUES('delete', old.id, old.content, old.document_id);
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
+    INSERT INTO chunks_fts(chunks_fts, rowid, content, document_id) VALUES('delete', old.id, old.content, old.document_id);
+    INSERT INTO chunks_fts(rowid, content, document_id) VALUES (new.id, new.content, new.document_id);
+END;
 """

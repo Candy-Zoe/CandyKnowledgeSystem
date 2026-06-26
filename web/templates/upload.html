@@ -3,13 +3,26 @@
 {% block content %}
 <div class="page-header">
     <h2>上传文件</h2>
-    <p>支持PDF、Word(.docx)、TXT格式，可选择多个文件批量上传</p>
+    <p>支持PDF、Word、TXT、Markdown、HTML、CSV、Excel等格式，可选择多个文件批量上传</p>
+</div>
+
+<div class="format-info">
+    <h4>支持的文件格式：</h4>
+    <div class="format-tags">
+        <span class="tag">PDF (.pdf)</span>
+        <span class="tag">Word (.docx/.doc)</span>
+        <span class="tag">文本 (.txt)</span>
+        <span class="tag">Markdown (.md)</span>
+        <span class="tag">HTML (.html/.htm)</span>
+        <span class="tag">CSV (.csv)</span>
+        <span class="tag">Excel (.xlsx/.xls)</span>
+    </div>
 </div>
 
 <div class="upload-area" id="dropZone">
     <div class="upload-icon">📁</div>
     <p>将文件拖拽到这里，或点击选择文件</p>
-    <input type="file" id="fileInput" multiple accept=".pdf,.docx,.doc,.txt" hidden>
+    <input type="file" id="fileInput" multiple accept=".pdf,.docx,.doc,.txt,.md,.html,.htm,.csv,.xlsx,.xls" hidden>
     <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">选择文件</button>
 </div>
 

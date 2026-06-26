@@ -10,6 +10,23 @@
     </div>
 </div>
 
+<div class="stats-bar">
+    <div class="stat-item"><span class="stat-value">{{ stats.document_count }}</span><span class="stat-label">文档数</span></div>
+    <div class="stat-item"><span class="stat-value">{{ stats.chunk_count }}</span><span class="stat-label">分块数</span></div>
+    <div class="stat-item"><span class="stat-value">{{ stats.training_pair_count }}</span><span class="stat-label">训练数据</span></div>
+    <div class="stat-item"><span class="stat-value">{{ stats.total_size_mb }}MB</span><span class="stat-label">总大小</span></div>
+</div>
+
+<div class="search-bar">
+    <input type="text" id="searchInput" placeholder="搜索知识库内容..." onkeypress="if(event.key==='Enter')searchContent()">
+    <button class="btn btn-primary" onclick="searchContent()">搜索</button>
+</div>
+
+<div id="searchResults" class="search-results" style="display:none;">
+    <h3>搜索结果</h3>
+    <div id="searchResultList"></div>
+</div>
+
 <table class="doc-table">
     <thead>
         <tr>
@@ -32,6 +49,7 @@
             <td><span class="status status-{{ doc.status }}">{{ doc.status }}</span></td>
             <td>{{ doc.created_at }}</td>
             <td>
+                <button class="btn btn-sm" onclick="previewDoc({{ doc.id }})">预览</button>
                 <button class="btn btn-danger btn-sm" onclick="deleteDoc({{ doc.id }})">删除</button>
             </td>
         </tr>
@@ -41,6 +59,18 @@
         {% endif %}
     </tbody>
 </table>
+
+<div id="previewModal" class="modal" style="display:none;">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 id="previewTitle">文档预览</h3>
+            <button class="btn btn-sm" onclick="closePreview()">关闭</button>
+        </div>
+        <div class="modal-body">
+            <pre id="previewContent"></pre>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -51,8 +81,10 @@ function deleteDoc(id) {
         .then(r => r.json())
         .then(() => location.reload());
 }
+
 function exportJSON() { window.location = '/documents/api/export/json'; }
 function exportSQL() { window.location = '/documents/api/export/sql'; }
+
 function importJSON(input) {
     const file = input.files[0];
     if (!file) return;
@@ -61,6 +93,45 @@ function importJSON(input) {
     fetch('/documents/api/import', { method: 'POST', body: formData })
         .then(r => r.json())
         .then(data => { alert(data.message); location.reload(); });
+}
+
+function previewDoc(id) {
+    fetch(`/documents/api/${id}/content`)
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('previewTitle').textContent = `文档预览 (${data.chunk_count}个分块)`;
+            document.getElementById('previewContent').textContent = data.content;
+            document.getElementById('previewModal').style.display = 'flex';
+        });
+}
+
+function closePreview() {
+    document.getElementById('previewModal').style.display = 'none';
+}
+
+function searchContent() {
+    const keyword = document.getElementById('searchInput').value.trim();
+    if (!keyword) return;
+    fetch(`/documents/api/search?q=${encodeURIComponent(keyword)}`)
+        .then(r => r.json())
+        .then(results => {
+            const container = document.getElementById('searchResults');
+            const list = document.getElementById('searchResultList');
+            container.style.display = 'block';
+            if (results.length === 0) {
+                list.innerHTML = '<p class="empty">未找到相关内容</p>';
+                return;
+            }
+            list.innerHTML = results.map(r => `
+                <div class="search-result-item">
+                    <div class="result-header">
+                        <span class="result-doc">${r.document_name}</span>
+                        <span class="result-pos">分块 #${r.chunk_index}</span>
+                    </div>
+                    <div class="result-content">${r.content}</div>
+                </div>
+            `).join('');
+        });
 }
 </script>
 {% endblock %}
