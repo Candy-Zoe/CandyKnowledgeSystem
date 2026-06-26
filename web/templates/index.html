@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}首页 - Candy知识库{% endblock %}
+{% block content %}
+<div class="hero">
+    <h1>Candy知识库系统</h1>
+    <p>上传文档，构建属于自己的知识库，通过AI进行智能问答</p>
+</div>
+<div class="features">
+    <div class="feature-card">
+        <h3>📄 文档导入</h3>
+        <p>支持PDF、Word、TXT文件，单个或批量上传</p>
+        <a href="/upload/" class="btn">开始上传</a>
+    </div>
+    <div class="feature-card">
+        <h3>📚 知识管理</h3>
+        <p>自动解析、分词、构建向量索引</p>
+        <a href="/documents/" class="btn">管理文档</a>
+    </div>
+    <div class="feature-card">
+        <h3>🤖 智能问答</h3>
+        <p>基于知识库的RAG检索增强问答</p>
+        <a href="/qa/" class="btn">开始提问</a>
+    </div>
+    <div class="feature-card">
+        <h3>🔧 模型微调</h3>
+        <p>用知识库数据微调专属模型</p>
+        <a href="/finetune/" class="btn">微调模型</a>
+    </div>
+</div>
+{% endblock %}

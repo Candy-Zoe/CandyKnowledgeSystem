@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}模型微调 - Candy知识库{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h2>模型微调</h2>
+    <p>管理训练数据，启动微调任务</p>
+</div>
+
+<div class="section">
+    <h3>训练数据管理</h3>
+    <div class="actions">
+        <button class="btn btn-primary" onclick="generatePairs()">自动生成训练数据</button>
+        <button class="btn" onclick="showAddPair()">手动添加</button>
+    </div>
+
+    <div id="addPairForm" style="display:none;" class="form-card">
+        <input type="text" id="pairQuestion" placeholder="问题" class="input-full">
+        <textarea id="pairAnswer" placeholder="回答" class="input-full" rows="3"></textarea>
+        <button class="btn btn-primary" onclick="addPair()">添加</button>
+        <button class="btn" onclick="hideAddPair()">取消</button>
+    </div>
+
+    <table class="doc-table">
+        <thead>
+            <tr><th>问题</th><th>回答</th><th>来源</th><th>操作</th></tr>
+        </thead>
+        <tbody>
+            {% for pair in pairs %}
+            <tr>
+                <td>{{ pair.question[:50] }}{% if pair.question|length > 50 %}...{% endif %}</td>
+                <td>{{ pair.answer[:50] }}{% if pair.answer|length > 50 %}...{% endif %}</td>
+                <td>{{ "自动生成" if pair.is_generated else "手动添加" }}</td>
+                <td><button class="btn btn-danger btn-sm" onclick="deletePair({{ pair.id }})">删除</button></td>
+            </tr>
+            {% endfor %}
+            {% if not pairs %}
+            <tr><td colspan="4" class="empty">暂无训练数据</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+    <p>共 {{ pairs|length }} 条训练数据</p>
+</div>
+
+<div class="section">
+    <h3>启动微调</h3>
+    <div class="form-card">
+        <label>模型名称: <input type="text" id="modelName" value="my_model" class="input-full"></label>
+        <label>基础模型: <input type="text" id="baseModel" value="Qwen/Qwen2-1.5B" class="input-full"></label>
+        <label>训练轮数: <input type="number" id="epochs" value="3" min="1" max="10"></label>
+        <label>LoRA Rank: <input type="number" id="loraRank" value="16" min="4" max="64"></label>
+        <button class="btn btn-primary" onclick="startFinetune()">开始微调</button>
+    </div>
+</div>
+
+<div class="section">
+    <h3>微调任务</h3>
+    <table class="doc-table">
+        <thead>
+            <tr><th>模型名</th><th>基础模型</th><th>样本数</th><th>状态</th><th>创建时间</th></tr>
+        </thead>
+        <tbody>
+            {% for job in jobs %}
+            <tr>
+                <td>{{ job.model_name }}</td>
+                <td>{{ job.base_model }}</td>
+                <td>{{ job.training_samples }}</td>
+                <td><span class="status status-{{ job.status }}">{{ job.status }}</span></td>
+                <td>{{ job.created_at }}</td>
+            </tr>
+            {% endfor %}
+            {% if not jobs %}
+            <tr><td colspan="5" class="empty">暂无微调任务</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function generatePairs() {
+    if (!confirm('将根据已有文档自动生成训练数据，继续？')) return;
+    fetch('/finetune/api/generate-pairs', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => { alert(data.message); location.reload(); });
+}
+function showAddPair() { document.getElementById('addPairForm').style.display = 'block'; }
+function hideAddPair() { document.getElementById('addPairForm').style.display = 'none'; }
+function addPair() {
+    const q = document.getElementById('pairQuestion').value.trim();
+    const a = document.getElementById('pairAnswer').value.trim();
+    if (!q || !a) { alert('请填写问题和回答'); return; }
+    fetch('/finetune/api/training-pairs', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({question: q, answer: a})
+    }).then(r => r.json()).then(() => location.reload());
+}
+function deletePair(id) {
+    if (!confirm('确定删除？')) return;
+    fetch(`/finetune/api/training-pairs/${id}`, {method: 'DELETE'})
+        .then(() => location.reload());
+}
+function startFinetune() {
+    const data = {
+        model_name: document.getElementById('modelName').value,
+        base_model: document.getElementById('baseModel').value,
+        epochs: parseInt(document.getElementById('epochs').value),
+        lora_rank: parseInt(document.getElementById('loraRank').value)
+    };
+    fetch('/finetune/api/start', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    }).then(r => r.json()).then(d => {
+        if (d.error) alert(d.error);
+        else { alert('微调任务已创建: ' + d.job_id); location.reload(); }
+    });
+}
+</script>
+{% endblock %}

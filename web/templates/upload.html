@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}上传文件 - Candy知识库{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h2>上传文件</h2>
+    <p>支持PDF、Word(.docx)、TXT格式，可选择多个文件批量上传</p>
+</div>
+
+<div class="upload-area" id="dropZone">
+    <div class="upload-icon">📁</div>
+    <p>将文件拖拽到这里，或点击选择文件</p>
+    <input type="file" id="fileInput" multiple accept=".pdf,.docx,.doc,.txt" hidden>
+    <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">选择文件</button>
+</div>
+
+<div id="fileList" class="file-list" style="display:none;">
+    <h3>已选择的文件</h3>
+    <ul id="selectedFiles"></ul>
+    <button class="btn btn-primary" id="uploadBtn" onclick="uploadFiles()">开始上传</button>
+</div>
+
+<div id="uploadResult" class="upload-result" style="display:none;">
+    <h3>上传结果</h3>
+    <div id="resultContent"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+const fileList = document.getElementById('fileList');
+const selectedFiles = document.getElementById('selectedFiles');
+let files = [];
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    addFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', e => addFiles(e.target.files));
+
+function addFiles(newFiles) {
+    for (const f of newFiles) {
+        if (!files.find(x => x.name === f.name)) files.push(f);
+    }
+    renderFiles();
+}
+
+function renderFiles() {
+    if (files.length === 0) { fileList.style.display = 'none'; return; }
+    fileList.style.display = 'block';
+    selectedFiles.innerHTML = files.map((f, i) =>
+        `<li>${f.name} (${(f.size/1024).toFixed(1)}KB) <button onclick="removeFile(${i})">移除</button></li>`
+    ).join('');
+}
+
+function removeFile(i) { files.splice(i, 1); renderFiles(); }
+
+function uploadFiles() {
+    const formData = new FormData();
+    files.forEach(f => formData.append('files', f));
+    document.getElementById('uploadBtn').disabled = true;
+    document.getElementById('uploadBtn').textContent = '上传中...';
+
+    fetch('/upload/', { method: 'POST', body: formData })
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('uploadResult').style.display = 'block';
+            document.getElementById('resultContent').innerHTML =
+                `<p>${data.message}</p><pre>${JSON.stringify(data.results, null, 2)}</pre>`;
+            files = [];
+            renderFiles();
+            document.getElementById('uploadBtn').disabled = false;
+            document.getElementById('uploadBtn').textContent = '开始上传';
+        })
+        .catch(err => {
+            alert('上传失败: ' + err.message);
+            document.getElementById('uploadBtn').disabled = false;
+            document.getElementById('uploadBtn').textContent = '开始上传';
+        });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}智能问答 - Candy知识库{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h2>智能问答</h2>
+    <p>基于知识库进行RAG检索增强问答</p>
+</div>
+
+<div class="chat-container">
+    <div class="chat-messages" id="chatMessages">
+        <div class="message system">请输入问题，系统将从知识库中检索相关内容并回答。</div>
+    </div>
+    <div class="chat-input">
+        <input type="text" id="questionInput" placeholder="输入你的问题..." onkeypress="if(event.key==='Enter')askQuestion()">
+        <button class="btn btn-primary" onclick="askQuestion()">提问</button>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function askQuestion() {
+    const input = document.getElementById('questionInput');
+    const question = input.value.trim();
+    if (!question) return;
+
+    addMessage('user', question);
+    input.value = '';
+
+    const loading = addMessage('system', '正在检索知识库...');
+
+    fetch('/qa/api/query', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({question})
+    })
+    .then(r => r.json())
+    .then(data => {
+        loading.remove();
+        addMessage('assistant', data.answer);
+        if (data.sources && data.sources.length > 0) {
+            let sourcesHtml = '<div class="sources"><strong>参考来源：</strong><ul>';
+            data.sources.forEach(s => {
+                sourcesHtml += `<li>${s.document} (相似度: ${s.score}) - ${s.content_preview}...</li>`;
+            });
+            sourcesHtml += '</ul></div>';
+            addMessage('system', sourcesHtml, true);
+        }
+    })
+    .catch(err => {
+        loading.remove();
+        addMessage('system', '请求失败: ' + err.message);
+    });
+}
+
+function addMessage(role, content, isHtml) {
+    const div = document.createElement('div');
+    div.className = 'message ' + role;
+    if (isHtml) div.innerHTML = content;
+    else div.textContent = content;
+    document.getElementById('chatMessages').appendChild(div);
+    div.scrollIntoView({behavior: 'smooth'});
+    return div;
+}
+</script>
+{% endblock %}

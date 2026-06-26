@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Candy知识库{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">Candy知识库</div>
+        <div class="nav-links">
+            <a href="/" class="nav-link">首页</a>
+            <a href="/upload/" class="nav-link">上传文件</a>
+            <a href="/documents/" class="nav-link">文档管理</a>
+            <a href="/qa/" class="nav-link">智能问答</a>
+            <a href="/finetune/" class="nav-link">模型微调</a>
+        </div>
+    </nav>
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

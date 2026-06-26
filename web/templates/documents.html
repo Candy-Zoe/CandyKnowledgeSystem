@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}文档管理 - Candy知识库{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h2>文档管理</h2>
+    <div class="header-actions">
+        <button class="btn" onclick="exportJSON()">导出JSON</button>
+        <button class="btn" onclick="exportSQL()">导出SQL</button>
+        <label class="btn">导入JSON <input type="file" accept=".json" onchange="importJSON(this)" hidden></label>
+    </div>
+</div>
+
+<table class="doc-table">
+    <thead>
+        <tr>
+            <th>文件名</th>
+            <th>类型</th>
+            <th>大小</th>
+            <th>分块数</th>
+            <th>状态</th>
+            <th>上传时间</th>
+            <th>操作</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for doc in documents %}
+        <tr>
+            <td>{{ doc.original_name }}</td>
+            <td>{{ doc.file_type }}</td>
+            <td>{{ "%.1f"|format(doc.file_size / 1024) }}KB</td>
+            <td>{{ doc.total_chunks }}</td>
+            <td><span class="status status-{{ doc.status }}">{{ doc.status }}</span></td>
+            <td>{{ doc.created_at }}</td>
+            <td>
+                <button class="btn btn-danger btn-sm" onclick="deleteDoc({{ doc.id }})">删除</button>
+            </td>
+        </tr>
+        {% endfor %}
+        {% if not documents %}
+        <tr><td colspan="7" class="empty">暂无文档，请先上传文件</td></tr>
+        {% endif %}
+    </tbody>
+</table>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function deleteDoc(id) {
+    if (!confirm('确定要删除此文档吗？')) return;
+    fetch(`/documents/api/${id}`, { method: 'DELETE' })
+        .then(r => r.json())
+        .then(() => location.reload());
+}
+function exportJSON() { window.location = '/documents/api/export/json'; }
+function exportSQL() { window.location = '/documents/api/export/sql'; }
+function importJSON(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    fetch('/documents/api/import', { method: 'POST', body: formData })
+        .then(r => r.json())
+        .then(data => { alert(data.message); location.reload(); });
+}
+</script>
+{% endblock %}
