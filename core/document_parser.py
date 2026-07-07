@@ -75,10 +75,14 @@ class DocumentParser:
     def parse_pdf(file_path: str) -> str:
         doc = fitz.open(file_path)
         text_parts = []
+        total_text_len = 0
+
+        # Pass 1: Try to extract text directly
         for i, page in enumerate(doc):
             page_text = page.get_text("text")
             if page_text.strip():
                 text_parts.append(f"[第{i+1}页]\n{page_text}")
+                total_text_len += len(page_text.strip())
             tables = page.find_tables()
             if tables and tables.tables:
                 for table in tables.tables:
@@ -86,6 +90,43 @@ class DocumentParser:
                     if table_data:
                         table_text = "\n".join([" | ".join(str(cell) if cell else "" for cell in row) for row in table_data])
                         text_parts.append(f"[表格 第{i+1}页]\n{table_text}")
+
+        # Pass 2: If text is too little, use OCR
+        page_count = len(doc)
+        avg_text_per_page = total_text_len / page_count if page_count > 0 else 0
+
+        if avg_text_per_page < 50:
+            try:
+                import easyocr
+                import io
+                from PIL import Image
+
+                reader = easyocr.Reader(['ch_sim', 'en'], gpu=False)
+                text_parts = []
+
+                for i, page in enumerate(doc):
+                    page_text = page.get_text("text")
+                    if page_text.strip() and len(page_text.strip()) > 30:
+                        text_parts.append(f"[第{i+1}页]\n{page_text}")
+                    else:
+                        # Render page to image
+                        mat = fitz.Matrix(1.5, 1.5)
+                        pix = page.get_pixmap(matrix=mat)
+                        img_data = pix.tobytes("png")
+                        img = Image.open(io.BytesIO(img_data))
+
+                        # OCR with easyocr
+                        import numpy as np
+                        img_array = np.array(img)
+                        results = reader.readtext(img_array)
+                        ocr_text = "\n".join([r[1] for r in results if r[1].strip()])
+                        if ocr_text.strip():
+                            text_parts.append(f"[第{i+1}页 OCR]\n{ocr_text.strip()}")
+            except ImportError:
+                pass
+            except Exception:
+                pass
+
         doc.close()
         return "\n\n".join(text_parts)
 
