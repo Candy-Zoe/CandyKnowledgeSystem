@@ -1,5 +1,6 @@
 import json
 import requests
+from core.logger import log
 
 
 class APIClient:
@@ -42,6 +43,7 @@ class APIClient:
         info = self.PROVIDERS.get(provider, self.PROVIDERS["custom"])
         self.base_url = base_url or info["base_url"]
         self.model = model or (info["models"][0] if info["models"] else "")
+        log.info(f"API客户端初始化: provider={provider}, model={self.model}")
 
     def chat(self, messages, temperature=0.7, max_tokens=1024, stream=False):
         url = f"{self.base_url}/chat/completions"
@@ -57,32 +59,45 @@ class APIClient:
             "stream": stream,
         }
 
+        log.info(f"API请求: {url} (stream={stream})")
+        
         if stream:
             return self._stream_request(url, headers, payload)
         else:
-            resp = requests.post(url, headers=headers, json=payload, timeout=60)
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
+            try:
+                resp = requests.post(url, headers=headers, json=payload, timeout=60)
+                resp.raise_for_status()
+                data = resp.json()
+                content = data["choices"][0]["message"]["content"]
+                log.info(f"API响应成功: {len(content)} 字符")
+                return content
+            except requests.exceptions.RequestException as e:
+                log.error(f"API请求失败: {e}")
+                raise
 
     def _stream_request(self, url, headers, payload):
-        resp = requests.post(url, headers=headers, json=payload, stream=True, timeout=60)
-        resp.raise_for_status()
-        for line in resp.iter_lines():
-            if line:
-                line = line.decode("utf-8")
-                if line.startswith("data: "):
-                    data = line[6:]
-                    if data.strip() == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data)
-                        delta = chunk.get("choices", [{}])[0].get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            yield content
-                    except json.JSONDecodeError:
-                        continue
+        try:
+            resp = requests.post(url, headers=headers, json=payload, stream=True, timeout=60)
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if line:
+                    line = line.decode("utf-8")
+                    if line.startswith("data: "):
+                        data = line[6:]
+                        if data.strip() == "[DONE]":
+                            log.info("API流式响应完成")
+                            break
+                        try:
+                            chunk = json.loads(data)
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                yield content
+                        except json.JSONDecodeError:
+                            continue
+        except requests.exceptions.RequestException as e:
+            log.error(f"API流式请求失败: {e}")
+            raise
 
     @staticmethod
     def list_providers():

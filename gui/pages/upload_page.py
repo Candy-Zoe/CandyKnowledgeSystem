@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QFileDialog, QListWidget, QListWidgetItem, QComboBox,
-    QProgressBar, QMessageBox
+    QProgressBar, QMessageBox, QSlider, QGroupBox, QFormLayout, QSpinBox
 )
 from PySide6.QtCore import Qt, QThread
 import sys
@@ -36,6 +36,61 @@ class UploadPage(QWidget):
         kb_row.addWidget(self.kb_combo)
         kb_row.addStretch()
         layout.addLayout(kb_row)
+
+        # CPU 节流设置
+        cpu_group = QGroupBox("性能设置")
+        cpu_group.setStyleSheet("""
+            QGroupBox {
+                border: 1px solid #45475a;
+                border-radius: 8px;
+                margin-top: 8px;
+                padding-top: 16px;
+                color: #cdd6f4;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 4px;
+            }
+        """)
+        cpu_layout = QFormLayout(cpu_group)
+
+        settings = config.load_settings()
+
+        # CPU 线程数
+        self.threads_spin = QSpinBox()
+        self.threads_spin.setRange(1, 16)
+        self.threads_spin.setValue(settings.get("torch_threads", 2))
+        self.threads_spin.setSuffix(" 线程")
+        self.threads_spin.setToolTip("限制 PyTorch 线程数，值越小 CPU 占用越低")
+        cpu_layout.addRow("CPU 线程数:", self.threads_spin)
+
+        # 页面休眠时间
+        self.sleep_spin = QSpinBox()
+        self.sleep_spin.setRange(0, 1000)
+        self.sleep_spin.setSingleStep(50)
+        self.sleep_spin.setValue(settings.get("page_sleep_ms", 100))
+        self.sleep_spin.setSuffix(" ms")
+        self.sleep_spin.setToolTip("每页处理后暂停时间，值越大越不占 CPU")
+        cpu_layout.addRow("页面休眠:", self.sleep_spin)
+
+        # PDF 最大页数
+        self.max_pages_spin = QSpinBox()
+        self.max_pages_spin.setRange(0, 10000)
+        self.max_pages_spin.setSpecialValueText("不限制")
+        self.max_pages_spin.setValue(settings.get("max_pdf_pages", 500))
+        self.max_pages_spin.setSuffix(" 页")
+        self.max_pages_spin.setToolTip("超过此页数的 PDF 只处理前 N 页（0=不限制）")
+        cpu_layout.addRow("PDF 最大页数:", self.max_pages_spin)
+
+        # 嵌入批次大小
+        self.batch_spin = QSpinBox()
+        self.batch_spin.setRange(1, 128)
+        self.batch_spin.setValue(settings.get("embedding_batch_size", 16))
+        self.batch_spin.setToolTip("嵌入生成批次大小，值越小内存占用越低")
+        cpu_layout.addRow("嵌入批次:", self.batch_spin)
+
+        layout.addWidget(cpu_group)
 
         btn_row = QHBoxLayout()
         self.select_btn = QPushButton("选择文件")
@@ -87,6 +142,14 @@ class UploadPage(QWidget):
         except Exception:
             pass
 
+    def _save_settings(self):
+        settings = config.load_settings()
+        settings["torch_threads"] = self.threads_spin.value()
+        settings["page_sleep_ms"] = self.sleep_spin.value()
+        settings["max_pdf_pages"] = self.max_pages_spin.value()
+        settings["embedding_batch_size"] = self.batch_spin.value()
+        config.save_settings(settings)
+
     def select_files(self):
         files, _ = QFileDialog.getOpenFileNames(
             self, "选择文件", "",
@@ -105,6 +168,8 @@ class UploadPage(QWidget):
         if not self.file_paths:
             return
 
+        self._save_settings()
+
         self.upload_btn.setEnabled(False)
         self.select_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
@@ -119,6 +184,7 @@ class UploadPage(QWidget):
 
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self.on_progress)
+        self.worker.page_progress.connect(self.on_page_progress)
         self.worker.file_done.connect(self.on_file_done)
         self.worker.all_done.connect(self.on_all_done)
         self.worker.error.connect(self.on_error)
@@ -129,6 +195,9 @@ class UploadPage(QWidget):
     def on_progress(self, file_idx, percent):
         self.progress_bar.setValue(file_idx)
         self.status_label.setText(f"正在处理第 {file_idx + 1} 个文件... ({percent}%)")
+
+    def on_page_progress(self, info):
+        self.status_label.setText(info)
 
     def on_file_done(self, doc_id, status, message):
         if status == "completed":

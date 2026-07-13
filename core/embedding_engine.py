@@ -3,6 +3,7 @@ import math
 import numpy as np
 from collections import Counter
 from sentence_transformers import SentenceTransformer
+from core.logger import log
 
 
 class BM25:
@@ -84,16 +85,37 @@ class Reranker:
 
 
 class EmbeddingEngine:
-    def __init__(self, model_name="BAAI/bge-small-zh-v1.5"):
-        self.model = SentenceTransformer(model_name)
+    def __init__(self, model_name="BAAI/bge-small-zh-v1.5", torch_threads=0, batch_size=16):
+        """
+        Args:
+            model_name: 嵌入模型名称
+            torch_threads: PyTorch 线程数，0=使用默认值
+            batch_size: 嵌入生成批次大小
+        """
+        # 限制 PyTorch 线程数，降低 CPU 占用
+        if torch_threads > 0:
+            import torch
+            torch.set_num_threads(torch_threads)
+            torch.set_num_interop_threads(min(torch_threads, torch.get_num_interop_threads()))
+            log.info(f"PyTorch 线程数限制为: {torch_threads}")
+
+        self.batch_size = batch_size
+        log.info(f"加载嵌入模型: {model_name}")
+        try:
+            self.model = SentenceTransformer(model_name)
+            log.info(f"嵌入模型加载成功: {model_name}")
+        except Exception as e:
+            log.error(f"嵌入模型加载失败: {model_name} - {e}")
+            raise
         self.bm25 = BM25()
         self.reranker = None
 
     def embed_text(self, text: str) -> np.ndarray:
         return self.model.encode(text, normalize_embeddings=True)
 
-    def embed_batch(self, texts: list, batch_size=64) -> np.ndarray:
-        return self.model.encode(texts, batch_size=batch_size, normalize_embeddings=True, show_progress_bar=True)
+    def embed_batch(self, texts: list, batch_size=None) -> np.ndarray:
+        bs = batch_size or self.batch_size
+        return self.model.encode(texts, batch_size=bs, normalize_embeddings=True, show_progress_bar=True)
 
     def serialize_embedding(self, embedding) -> bytes:
         return embedding.astype(np.float32).tobytes()

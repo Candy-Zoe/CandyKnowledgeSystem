@@ -169,40 +169,10 @@ class DatabaseManager:
         conn.close()
         return True
 
-    def create_finetune_job(self, model_name, base_model, training_samples, epochs, lora_rank) -> int:
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO finetune_jobs (model_name, base_model, training_samples, epochs, lora_rank) VALUES (?, ?, ?, ?, ?)",
-            (model_name, base_model, training_samples, epochs, lora_rank)
-        )
-        job_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return job_id
-
-    def update_finetune_job(self, job_id, **kwargs):
-        conn = self.get_connection()
-        sets = []
-        values = []
-        for k, v in kwargs.items():
-            sets.append(f"{k}=?")
-            values.append(v)
-        values.append(job_id)
-        conn.execute(f"UPDATE finetune_jobs SET {','.join(sets)} WHERE id=?", values)
-        conn.commit()
-        conn.close()
-
-    def list_finetune_jobs(self) -> list:
-        conn = self.get_connection()
-        rows = conn.execute("SELECT * FROM finetune_jobs ORDER BY created_at DESC").fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
-
     def export_to_json(self, output_path: str):
         conn = self.get_connection()
         data = {}
-        for table in ["documents", "chunks", "training_pairs", "finetune_jobs"]:
+        for table in ["documents", "chunks", "training_pairs", "conversations", "messages"]:
             rows = conn.execute(f"SELECT * FROM {table}").fetchall()
             data[table] = [dict(r) for r in rows]
         conn.close()
@@ -288,7 +258,6 @@ class DatabaseManager:
         completed = conn.execute("SELECT COUNT(*) FROM documents WHERE status='completed'").fetchone()[0]
         conv_count = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
         msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-        api_count = conn.execute("SELECT COUNT(*) FROM api_calls").fetchone()[0]
         conn.close()
         return {
             "document_count": doc_count,
@@ -297,7 +266,6 @@ class DatabaseManager:
             "completed_documents": completed,
             "conversation_count": conv_count,
             "message_count": msg_count,
-            "api_call_count": api_count,
             "total_size_bytes": total_size,
             "total_size_mb": round(total_size / (1024 * 1024), 2)
         }
@@ -381,54 +349,6 @@ class DatabaseManager:
             result.append(d)
         return result
 
-    def log_api_call(self, endpoint, method, status_code, response_time=None):
-        conn = self.get_connection()
-        conn.execute(
-            "INSERT INTO api_calls (endpoint, method, status_code, response_time) VALUES (?, ?, ?, ?)",
-            (endpoint, method, status_code, response_time)
-        )
-        conn.commit()
-        conn.close()
-
-    def get_api_stats(self) -> dict:
-        conn = self.get_connection()
-        total = conn.execute("SELECT COUNT(*) FROM api_calls").fetchone()[0]
-        today = conn.execute("SELECT COUNT(*) FROM api_calls WHERE date(created_at)=date('now')").fetchone()[0]
-        by_endpoint = conn.execute("SELECT endpoint, COUNT(*) as cnt FROM api_calls GROUP BY endpoint ORDER BY cnt DESC LIMIT 10").fetchall()
-        conn.close()
-        return {
-            "total_calls": total,
-            "today_calls": today,
-            "by_endpoint": [{"endpoint": r["endpoint"], "count": r["cnt"]} for r in by_endpoint]
-        }
-
-    def get_hot_questions(self, limit=10) -> list:
-        conn = self.get_connection()
-        rows = conn.execute(
-            "SELECT content, COUNT(*) as cnt FROM messages WHERE role='user' GROUP BY content ORDER BY cnt DESC LIMIT ?",
-            (limit,)
-        ).fetchall()
-        conn.close()
-        return [{"question": r["content"], "count": r["cnt"]} for r in rows]
-
-    def save_summary(self, doc_id, summary) -> int:
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT OR REPLACE INTO document_summaries (document_id, summary) VALUES (?, ?)",
-            (doc_id, summary)
-        )
-        sid = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return sid
-
-    def get_summary(self, doc_id) -> str:
-        conn = self.get_connection()
-        row = conn.execute("SELECT summary FROM document_summaries WHERE document_id=?", (doc_id,)).fetchone()
-        conn.close()
-        return row["summary"] if row else None
-
     def save_batch_result(self, batch_id, question, answer, sources=None) -> int:
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -455,85 +375,6 @@ class DatabaseManager:
             result.append(d)
         return result
 
-    def save_ocr_result(self, image_path, text, doc_id=None) -> int:
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO ocr_results (image_path, extracted_text, document_id) VALUES (?, ?, ?)",
-            (image_path, text, doc_id)
-        )
-        rid = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return rid
-
-    def create_user(self, username, password_hash, role="user") -> int:
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-            (username, password_hash, role)
-        )
-        uid = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return uid
-
-    def get_user(self, username) -> dict:
-        conn = self.get_connection()
-        row = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
-        conn.close()
-        return dict(row) if row else None
-
-    def list_users(self) -> list:
-        conn = self.get_connection()
-        rows = conn.execute("SELECT id, username, role, created_at FROM users ORDER BY created_at").fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
-
-    def delete_user(self, user_id) -> bool:
-        conn = self.get_connection()
-        conn.execute("DELETE FROM users WHERE id=?", (user_id,))
-        conn.commit()
-        conn.close()
-        return True
-
-    def create_scheduled_task(self, name, folder_path, interval_minutes=60) -> int:
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO scheduled_tasks (name, folder_path, interval_minutes) VALUES (?, ?, ?)",
-            (name, folder_path, interval_minutes)
-        )
-        tid = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return tid
-
-    def list_scheduled_tasks(self) -> list:
-        conn = self.get_connection()
-        rows = conn.execute("SELECT * FROM scheduled_tasks ORDER BY created_at DESC").fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
-
-    def delete_scheduled_task(self, task_id) -> bool:
-        conn = self.get_connection()
-        conn.execute("DELETE FROM scheduled_tasks WHERE id=?", (task_id,))
-        conn.commit()
-        conn.close()
-        return True
-
-    def update_scheduled_task(self, task_id, **kwargs):
-        conn = self.get_connection()
-        sets = []
-        values = []
-        for k, v in kwargs.items():
-            sets.append(f"{k}=?")
-            values.append(v)
-        values.append(task_id)
-        conn.execute(f"UPDATE scheduled_tasks SET {','.join(sets)} WHERE id=?", values)
-        conn.commit()
-        conn.close()
 
 
 SCHEMA = """
@@ -582,22 +423,6 @@ CREATE TABLE IF NOT EXISTS training_pairs (
     FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL
 );
 
-CREATE TABLE IF NOT EXISTS finetune_jobs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    model_name TEXT NOT NULL,
-    base_model TEXT NOT NULL,
-    status TEXT DEFAULT 'queued',
-    training_samples INTEGER,
-    epochs INTEGER,
-    lora_rank INTEGER,
-    output_path TEXT,
-    metrics TEXT,
-    error_message TEXT,
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE TABLE IF NOT EXISTS conversations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT DEFAULT '新对话',
@@ -617,56 +442,12 @@ CREATE TABLE IF NOT EXISTS messages (
     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS document_summaries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    document_id INTEGER UNIQUE NOT NULL,
-    summary TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
-);
-
 CREATE TABLE IF NOT EXISTS batch_results (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     batch_id TEXT NOT NULL,
     question TEXT NOT NULL,
     answer TEXT,
     sources TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS api_calls (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    endpoint TEXT NOT NULL,
-    method TEXT NOT NULL,
-    status_code INTEGER,
-    response_time REAL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS ocr_results (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    image_path TEXT NOT NULL,
-    extracted_text TEXT,
-    document_id INTEGER,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL
-);
-
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    role TEXT DEFAULT 'user',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS scheduled_tasks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    folder_path TEXT NOT NULL,
-    interval_minutes INTEGER DEFAULT 60,
-    enabled INTEGER DEFAULT 1,
-    last_run TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

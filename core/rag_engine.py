@@ -1,32 +1,25 @@
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
-from peft import PeftModel
-from threading import Thread
 from core.embedding_engine import EmbeddingEngine
 from core.api_client import APIClient
 from core.database import DatabaseManager
+from core.logger import log
 import config
 
 
 class RAGEngine:
-    def __init__(self, db, embedding_engine, model_path=None):
+    def __init__(self, db, embedding_engine):
         self.db = db
         self.embedding_engine = embedding_engine
-        self.model = None
-        self.tokenizer = None
-        self.model_path = None
-        self.model_type = None
         self.api_client = None
         self.settings = config.load_settings()
         self.retrieval_mode = self.settings.get("retrieval_mode", config.RETRIEVAL_MODE)
-        if model_path:
-            self.load_model(model_path)
+        log.info(f"RAG引擎初始化，检索模式: {self.retrieval_mode}")
 
     def load_settings(self, settings):
         self.settings = settings
         self.retrieval_mode = settings.get("retrieval_mode", "hybrid")
-        if settings.get("model_source") == "api":
+        if settings.get("api_key"):
             self._init_api_client(settings)
+            log.info(f"API客户端已配置: {settings.get('api_provider')}")
 
     def _init_api_client(self, settings):
         self.api_client = APIClient(
@@ -36,38 +29,8 @@ class RAGEngine:
             model=settings.get("api_model", ""),
         )
 
-    def load_model(self, model_path, model_type="finetuned"):
-        model_path = str(model_path)
-        self.api_client = None
-
-        if model_type == "custom":
-            self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_path, torch_dtype=torch.float16, device_map="auto", trust_remote_code=True
-            )
-        else:
-            base_model_name = config.DEFAULT_BASE_MODEL
-            self.tokenizer = AutoTokenizer.from_pretrained(base_model_name, trust_remote_code=True)
-            base_model = AutoModelForCausalLM.from_pretrained(
-                base_model_name, torch_dtype=torch.float16, device_map="auto", trust_remote_code=True
-            )
-            self.model = PeftModel.from_pretrained(base_model, model_path)
-
-        self.model.eval()
-        self.model_path = model_path
-        self.model_type = model_type
-
-    def unload_model(self):
-        self.model = None
-        self.tokenizer = None
-        self.model_path = None
-        self.model_type = None
-        self.api_client = None
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
     def is_model_loaded(self):
-        return self.model is not None or self.api_client is not None
+        return self.api_client is not None
 
     def get_model_status(self):
         if self.api_client:
@@ -77,34 +40,32 @@ class RAGEngine:
                 "provider": self.api_client.provider,
                 "model": self.api_client.model,
             }
-        if self.model is None:
-            return {"loaded": False, "message": "未加载模型"}
-        return {
-            "loaded": True,
-            "path": self.model_path,
-            "type": self.model_type,
-            "device": str(self.model.device),
-        }
+        return {"loaded": False, "message": "未配置API，请在设置中填写API密钥"}
 
     def retrieve(self, query, top_k=5):
+        log.info(f"检索: query='{query[:50]}...' top_k={top_k} mode={self.retrieval_mode}")
         chunks = self.db.get_all_chunks_with_embeddings()
         if not chunks:
+            log.warning("知识库为空，无法检索")
             return []
 
         if self.retrieval_mode == "bm25":
-            return self.embedding_engine.search_bm25(query, chunks, top_k)
+            results = self.embedding_engine.search_bm25(query, chunks, top_k)
         elif self.retrieval_mode == "hybrid":
-            return self.embedding_engine.search_hybrid(
+            results = self.embedding_engine.search_hybrid(
                 query, chunks, top_k,
                 vector_weight=self.settings.get("vector_weight", 0.7),
                 bm25_weight=self.settings.get("bm25_weight", 0.3),
             )
         else:
             query_emb = self.embedding_engine.embed_text(query)
-            return self.embedding_engine.search_similar(
+            results = self.embedding_engine.search_similar(
                 query_emb, chunks, top_k=top_k,
                 threshold=self.settings.get("similarity_threshold", 0.3),
             )
+        
+        log.info(f"检索完成: 找到 {len(results)} 个结果")
+        return results
 
     def set_retrieval_mode(self, mode):
         if mode in ("vector", "bm25", "hybrid"):
@@ -126,71 +87,43 @@ class RAGEngine:
 
     def _get_no_model_msg(self, context_chunks):
         context = "\n".join(["[%d] %s" % (i+1, c['chunk']['content'][:200]) for i, c in enumerate(context_chunks)])
-        return "根据知识库检索到以下相关内容：\n\n%s\n\n（提示：未加载模型，仅展示检索结果。）" % context
+        return "根据知识库检索到以下相关内容：\n\n%s\n\n（提示：未配置API，请在设置中填写API密钥以启用智能回答。）" % context
 
     def generate_answer(self, query, context_chunks, history=None):
-        if self.api_client:
-            messages = self._build_prompt(query, context_chunks, history)
-            try:
-                return self.api_client.chat(
-                    messages,
-                    temperature=self.settings.get("temperature", 0.7),
-                    max_tokens=self.settings.get("max_tokens", 1024),
-                )
-            except Exception as e:
-                return "API调用失败: %s" % str(e)
-
-        if not self.model:
+        if not self.api_client:
+            log.warning("未配置API，返回检索结果")
             return self._get_no_model_msg(context_chunks)
 
         messages = self._build_prompt(query, context_chunks, history)
-        text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=self.settings.get("max_tokens", 1024),
+        try:
+            log.info(f"调用API生成回答: {self.api_client.provider}/{self.api_client.model}")
+            answer = self.api_client.chat(
+                messages,
                 temperature=self.settings.get("temperature", 0.7),
-                top_p=0.9, do_sample=True, repetition_penalty=1.1,
+                max_tokens=self.settings.get("max_tokens", 1024),
             )
-        response = self.tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
-        return response.strip()
+            log.info(f"API回答生成完成: {len(answer)} 字符")
+            return answer
+        except Exception as e:
+            log.error(f"API调用失败: {e}")
+            return "API调用失败: %s" % str(e)
 
     def generate_answer_stream(self, query, context_chunks, history=None):
-        if self.api_client:
-            messages = self._build_prompt(query, context_chunks, history)
-            try:
-                for chunk in self.api_client.chat(
-                    messages,
-                    temperature=self.settings.get("temperature", 0.7),
-                    max_tokens=self.settings.get("max_tokens", 1024),
-                    stream=True,
-                ):
-                    yield chunk
-            except Exception as e:
-                yield "API调用失败: %s" % str(e)
-            return
-
-        if not self.model:
+        if not self.api_client:
             yield self._get_no_model_msg(context_chunks)
             return
 
         messages = self._build_prompt(query, context_chunks, history)
-        text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
-        streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
-        generation_kwargs = {
-            **inputs,
-            "max_new_tokens": self.settings.get("max_tokens", 1024),
-            "temperature": self.settings.get("temperature", 0.7),
-            "top_p": 0.9, "do_sample": True, "repetition_penalty": 1.1,
-            "streamer": streamer,
-        }
-        thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
-        thread.start()
-        for text_chunk in streamer:
-            yield text_chunk
-        thread.join()
+        try:
+            for chunk in self.api_client.chat(
+                messages,
+                temperature=self.settings.get("temperature", 0.7),
+                max_tokens=self.settings.get("max_tokens", 1024),
+                stream=True,
+            ):
+                yield chunk
+        except Exception as e:
+            yield "API调用失败: %s" % str(e)
 
     def query(self, query, top_k=5, history=None):
         results = self.retrieve(query, top_k)

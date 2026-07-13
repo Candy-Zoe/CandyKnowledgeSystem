@@ -1,18 +1,17 @@
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QStackedWidget, QLabel, QStatusBar
+    QStackedWidget, QLabel, QStatusBar
 )
 from PySide6.QtCore import Qt
 import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from gui.styles import NAV_BUTTON_STYLE
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Candy 知识库系统 - 桌面端")
+        self.setWindowTitle("Candy 知识库系统")
         self.setMinimumSize(1200, 750)
         self.resize(1400, 850)
 
@@ -20,7 +19,7 @@ class MainWindow(QMainWindow):
         self.nav_buttons = {}
 
         self.init_ui()
-        self.navigate_to("workflow")
+        self.navigate_to("upload")
 
     def init_ui(self):
         central = QWidget()
@@ -47,18 +46,12 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(sep)
 
         nav_items = [
-            ("🚀 快速开始", "workflow"),
             ("📤 上传文档", "upload"),
             ("📄 文档管理", "documents"),
             ("📚 知识库", "knowledge_bases"),
             ("❓ 智能问答", "qa"),
             ("📦 批量问答", "batch_qa"),
             ("💬 对话历史", "conversations"),
-            ("🔧 模型微调", "finetune"),
-            ("📝 文档摘要", "summary"),
-            ("👁 OCR识别", "ocr"),
-            ("⚙ 系统设置", "settings"),
-            ("📊 数据统计", "stats"),
         ]
 
         from gui.widgets.nav_button import NavButton
@@ -96,32 +89,20 @@ class MainWindow(QMainWindow):
             btn.set_active(pid == page_id)
 
     def create_page(self, page_id):
-        from gui.pages.workflow_page import WorkflowPage
         from gui.pages.upload_page import UploadPage
         from gui.pages.documents_page import DocumentsPage
         from gui.pages.qa_page import QAPage
         from gui.pages.batch_qa_page import BatchQAPage
         from gui.pages.conversations_page import ConversationsPage
         from gui.pages.knowledge_bases_page import KnowledgeBasesPage
-        from gui.pages.summary_page import SummaryPage
-        from gui.pages.finetune_page import FinetunePage
-        from gui.pages.settings_page import SettingsPage
-        from gui.pages.stats_page import StatsPage
-        from gui.pages.ocr_page import OCRPage
 
         page_map = {
-            "workflow": WorkflowPage,
             "upload": UploadPage,
             "documents": DocumentsPage,
             "qa": QAPage,
             "batch_qa": BatchQAPage,
             "conversations": ConversationsPage,
             "knowledge_bases": KnowledgeBasesPage,
-            "summary": SummaryPage,
-            "finetune": FinetunePage,
-            "settings": SettingsPage,
-            "stats": StatsPage,
-            "ocr": OCRPage,
         }
         return page_map[page_id]()
 

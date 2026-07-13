@@ -6,6 +6,7 @@ import config
 from core.database import DatabaseManager
 from core.embedding_engine import EmbeddingEngine
 from core.rag_engine import RAGEngine
+from core.logger import log
 
 
 class QAWorker(QObject):
@@ -19,20 +20,25 @@ class QAWorker(QObject):
         self.question = question
         self.history = history or []
 
-    def run(self):
+    def run():
+        log.info(f"收到问题: {self.question}")
         try:
             settings = config.load_settings()
             db = DatabaseManager(str(config.DB_PATH))
             emb_engine = EmbeddingEngine(settings.get("embedding_model", config.EMBEDDING_MODEL))
             rag = RAGEngine(db, emb_engine)
             rag.load_settings(settings)
+            log.info("RAG引擎初始化完成")
 
             chunks = db.get_all_chunks_with_embeddings()
             if not chunks:
+                log.warning("知识库中暂无数据")
                 self.finished.emit("知识库中暂无数据，请先上传文档。")
                 return
+            log.info(f"知识库中有 {len(chunks)} 个分块")
 
             results = rag.retrieve(self.question, top_k=5)
+            log.info(f"检索到 {len(results)} 个相关分块")
 
             sources = []
             for r in results:
@@ -50,7 +56,9 @@ class QAWorker(QObject):
                 full_answer += chunk_text
                 self.chunk_received.emit(chunk_text)
 
+            log.info(f"回答生成完成: {len(full_answer)} 字符")
             self.finished.emit(full_answer)
 
         except Exception as e:
+            log.error(f"问答失败: {e}")
             self.error.emit(str(e))

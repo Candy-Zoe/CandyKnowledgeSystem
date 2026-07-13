@@ -1,9 +1,10 @@
-import fitz
 import chardet
 import csv
 import io
 from pathlib import Path
 from docx import Document
+from core.pdf_parser import PDFParser, parse_pdf
+from core.logger import log, LogCapture
 
 
 class DocumentParser:
@@ -20,11 +21,25 @@ class DocumentParser:
         "xls": "Excel表格(旧版)",
     }
 
-    @staticmethod
-    def parse(file_path: str, file_type: str) -> str:
+    def __init__(self, max_pages=0, page_sleep_ms=0):
+        """
+        Args:
+            max_pages: PDF最大处理页数，0=不限制
+            page_sleep_ms: 每页处理后休眠毫秒数（CPU 节流）
+        """
+        self.max_pages = max_pages
+        self.page_sleep_ms = page_sleep_ms
+
+    def parse(self, file_path: str, file_type: str) -> str:
         file_type = file_type.lower().lstrip(".")
+        log.info(f"开始解析文件: {file_path} (类型: {file_type})")
+        
         parsers = {
-            "pdf": DocumentParser.parse_pdf,
+            "pdf": lambda fp: parse_pdf(
+                fp, use_ocr=True,
+                max_pages=self.max_pages,
+                page_sleep_ms=self.page_sleep_ms
+            ),
             "docx": DocumentParser.parse_docx,
             "doc": DocumentParser.parse_docx,
             "txt": DocumentParser.parse_txt,
@@ -37,8 +52,17 @@ class DocumentParser:
         }
         parser = parsers.get(file_type)
         if not parser:
-            raise ValueError(f"不支持的文件类型: {file_type}，支持: {', '.join(DocumentParser.SUPPORTED_TYPES.keys())}")
-        return parser(file_path)
+            error_msg = f"不支持的文件类型: {file_type}，支持: {', '.join(DocumentParser.SUPPORTED_TYPES.keys())}"
+            log.error(error_msg)
+            raise ValueError(error_msg)
+        
+        try:
+            result = parser(file_path)
+            log.info(f"解析完成: {file_path} -> {len(result)} 字符")
+            return result
+        except Exception as e:
+            log.error(f"解析失败: {file_path} - {e}")
+            raise
 
     @staticmethod
     def get_metadata(file_path: str, file_type: str) -> dict:
@@ -49,14 +73,9 @@ class DocumentParser:
         }
         if file_type == "pdf":
             try:
-                doc = fitz.open(file_path)
-                metadata["page_count"] = len(doc)
-                meta = doc.metadata
-                if meta:
-                    metadata["title"] = meta.get("title", "")
-                    metadata["author"] = meta.get("author", "")
-                    metadata["subject"] = meta.get("subject", "")
-                doc.close()
+                from core.pdf_parser import PDFValidator
+                check = PDFValidator.check(file_path)
+                metadata.update(check.get("info", {}))
             except Exception:
                 pass
         elif file_type in ("docx", "doc"):
@@ -70,90 +89,6 @@ class DocumentParser:
             except Exception:
                 pass
         return metadata
-
-    @staticmethod
-    def parse_pdf(file_path: str) -> str:
-        doc = fitz.open(file_path)
-        text_parts = []
-        total_text_len = 0
-
-        # Pass 1: Try to extract text directly
-        for i, page in enumerate(doc):
-            page_text = page.get_text("text")
-            if page_text.strip():
-                text_parts.append(f"[第{i+1}页]\n{page_text}")
-                total_text_len += len(page_text.strip())
-            tables = page.find_tables()
-            if tables and tables.tables:
-                for table in tables.tables:
-                    table_data = table.extract()
-                    if table_data:
-                        table_text = "\n".join([" | ".join(str(cell) if cell else "" for cell in row) for row in table_data])
-                        text_parts.append(f"[表格 第{i+1}页]\n{table_text}")
-
-        # Pass 2: If text is too little, use OCR
-        page_count = len(doc)
-        avg_text_per_page = total_text_len / page_count if page_count > 0 else 0
-
-        if avg_text_per_page < 50:
-            try:
-                import easyocr
-                import io
-                from PIL import Image
-
-                reader = easyocr.Reader(['ch_sim', 'en'], gpu=False)
-                text_parts = []
-
-                for i, page in enumerate(doc):
-                    page_text = page.get_text("text")
-                    if page_text.strip() and len(page_text.strip()) > 30:
-                        text_parts.append(f"[第{i+1}页]\n{page_text}")
-                    else:
-                        # Render page to image
-                        mat = fitz.Matrix(1.5, 1.5)
-                        pix = page.get_pixmap(matrix=mat)
-                        img_data = pix.tobytes("png")
-                        img = Image.open(io.BytesIO(img_data))
-
-                        # OCR with easyocr
-                        import numpy as np
-                        img_array = np.array(img)
-                        results = reader.readtext(img_array)
-                        ocr_text = "\n".join([r[1] for r in results if r[1].strip()])
-                        if ocr_text.strip():
-                            text_parts.append(f"[第{i+1}页 OCR]\n{ocr_text.strip()}")
-            except ImportError:
-                pass
-            except Exception:
-                pass
-
-        doc.close()
-        return "\n\n".join(text_parts)
-
-    @staticmethod
-    def parse_pdf_with_images(file_path: str) -> dict:
-        doc = fitz.open(file_path)
-        result = {"text": "", "images": [], "page_count": len(doc)}
-        for i, page in enumerate(doc):
-            page_text = page.get_text("text")
-            if page_text.strip():
-                result["text"] += f"[第{i+1}页]\n{page_text}\n\n"
-            image_list = page.get_images(full=True)
-            for img_index, img in enumerate(image_list):
-                xref = img[0]
-                try:
-                    base_image = doc.extract_image(xref)
-                    result["images"].append({
-                        "page": i + 1,
-                        "index": img_index,
-                        "width": base_image.get("width", 0),
-                        "height": base_image.get("height", 0),
-                        "ext": base_image.get("ext", "png"),
-                    })
-                except Exception:
-                    pass
-        doc.close()
-        return result
 
     @staticmethod
     def parse_docx(file_path: str) -> str:

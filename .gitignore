@@ -18,10 +18,13 @@ build/
 
 # Runtime data
 data/uploads/
-data/models/
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/settings.json
+
+# Logs
+logs/
 
 # Environment
 .env

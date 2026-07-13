@@ -5,10 +5,12 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
-MODEL_DIR = DATA_DIR / "models"
-CUSTOM_MODEL_DIR = DATA_DIR / "custom_models"
 DB_PATH = DATA_DIR / "knowledge.db"
 SETTINGS_FILE = DATA_DIR / "settings.json"
+
+# HuggingFace 国内镜像（解决下载慢/超时问题）
+# 如需使用官方源，设置环境变量 HF_ENDPOINT=https://huggingface.co
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
 EMBEDDING_DIMENSION = 512
@@ -24,26 +26,13 @@ RETRIEVAL_MODE = "hybrid"
 BM25_WEIGHT = 0.3
 VECTOR_WEIGHT = 0.7
 
-RERANK_ENABLED = False
-RERANK_MODEL = "BAAI/bge-reranker-base"
-
-DEFAULT_BASE_MODEL = "Qwen/Qwen2-1.5B"
-DEFAULT_LORA_RANK = 16
-DEFAULT_EPOCHS = 3
-DEFAULT_BATCH_SIZE = 4
-DEFAULT_LR = 2e-4
-
 SECRET_KEY = os.getenv("SECRET_KEY", "candy-knowledge-dev-key")
 MAX_UPLOAD_SIZE = 200 * 1024 * 1024
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-MODEL_DIR.mkdir(parents=True, exist_ok=True)
-CUSTOM_MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_SETTINGS = {
-    "model_source": "local",
-    "local_model_path": "",
     "api_provider": "qwen",
     "api_key": "",
     "api_model": "qwen-turbo",
@@ -59,6 +48,12 @@ DEFAULT_SETTINGS = {
     "embedding_model": "BAAI/bge-small-zh-v1.5",
     "temperature": 0.7,
     "max_tokens": 1024,
+    # CPU 节流设置
+    "torch_threads": 2,           # PyTorch 线程数（限制 CPU 核心占用）
+    "page_sleep_ms": 100,         # 每页解析后休眠毫秒数（0=不休眠）
+    "max_pdf_pages": 500,         # PDF 最大处理页数（0=不限制）
+    "max_file_size_mb": 200,      # 单文件最大 MB
+    "embedding_batch_size": 16,   # 嵌入生成批次大小
 }
 
 

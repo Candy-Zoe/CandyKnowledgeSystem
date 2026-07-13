@@ -205,26 +205,3 @@ QPushButton[active="true"] {
 }
 """
 
-WEB_BUTTON_STYLE = """
-QPushButton {
-    text-align: left;
-    padding: 12px 16px;
-    border-radius: 8px;
-    font-size: 14px;
-    color: #a6e3a1;
-    background-color: #1e1e2e;
-    border: 2px solid #a6e3a1;
-}
-QPushButton:hover {
-    background-color: #a6e3a1;
-    color: #1e1e2e;
-}
-"""
-
-STAT_CARD_STYLE = """
-QFrame {
-    background-color: #313244;
-    border-radius: 12px;
-    padding: 16px;
-}
-"""
