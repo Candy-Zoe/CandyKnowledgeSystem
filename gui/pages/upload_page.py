@@ -153,7 +153,33 @@ class UploadPage(QWidget):
     def select_files(self):
         files, _ = QFileDialog.getOpenFileNames(
             self, "选择文件", "",
-            "所有支持的文件 (*.pdf *.docx *.doc *.txt *.md);;PDF (*.pdf);;Word (*.docx *.doc);;文本 (*.txt *.md)"
+            "所有支持的文件 ("
+            "*.pdf *.docx *.doc *.pptx *.ppt *.xlsx *.xls "
+            "*.epub *.rtf *.odt *.ods *.odp *.mht *.mhtml "
+            "*.txt *.md *.html *.htm *.csv *.tsv "
+            "*.json *.xml *.yaml *.yml *.toml *.ini *.conf *.cfg *.properties *.log "
+            "*.py *.js *.java *.c *.cpp *.h *.hpp *.cs *.go *.rs "
+            "*.rb *.php *.swift *.kt *.scala *.r *.m *.mm "
+            "*.sql *.sh *.bat *.cmd *.ps1 *.bash *.zsh "
+            "*.css *.scss *.sass *.less *.vue *.jsx *.tsx "
+            "*.tex *.bib *.rst *.adoc *.org "
+            "*.zip "
+            "*.jpg *.jpeg *.png *.bmp *.gif *.tiff *.tif *.webp);;"
+            "PDF (*.pdf);;"
+            "Word (*.docx *.doc);;"
+            "PowerPoint (*.pptx *.ppt);;"
+            "Excel (*.xlsx *.xls);;"
+            "EPUB (*.epub);;"
+            "RTF (*.rtf);;"
+            "OpenDocument (*.odt *.ods *.odp);;"
+            "MHTML (*.mht *.mhtml);;"
+            "文本 (*.txt *.md);;"
+            "网页 (*.html *.htm);;"
+            "数据文件 (*.json *.xml *.yaml *.yml *.toml *.ini *.conf *.cfg *.properties *.log);;"
+            "代码文件 (*.py *.js *.java *.c *.cpp *.h *.hpp *.cs *.go *.rs *.rb *.php *.swift *.kt *.scala *.r *.m *.mm *.sql *.sh *.bat *.cmd *.ps1 *.bash *.zsh *.css *.scss *.sass *.less *.vue *.jsx *.tsx *.tex *.bib *.rst *.adoc *.org);;"
+            "表格 (*.csv *.tsv);;"
+            "压缩包 (*.zip);;"
+            "图片OCR (*.jpg *.jpeg *.png *.bmp *.gif *.tiff *.tif *.webp)"
         )
         if files:
             self.file_paths = files
