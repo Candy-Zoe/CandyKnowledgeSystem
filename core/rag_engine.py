@@ -1,161 +1,184 @@
+"""
+RAG 引擎 - 检索增强生成
+
+支持两种模式：
+1. 仅检索模式 (local): 不使用LLM，直接返回知识库检索结果并格式化
+2. LLM模式: 将检索结果作为上下文，调用云端/本地LLM生成回答
+"""
+import logging
+from core.database import DatabaseManager
 from core.embedding_engine import EmbeddingEngine
 from core.api_client import APIClient
-from core.database import DatabaseManager
-from core.logger import log
-import config
+
+logger = logging.getLogger(__name__)
 
 
 class RAGEngine:
-    def __init__(self, db, embedding_engine):
+    def __init__(self, db: DatabaseManager, embed_engine: EmbeddingEngine,
+                 api_client: APIClient, top_k=5, retrieval_mode="hybrid"):
         self.db = db
-        self.embedding_engine = embedding_engine
-        self.api_client = None
-        self.settings = config.load_settings()
-        self.retrieval_mode = self.settings.get("retrieval_mode", config.RETRIEVAL_MODE)
-        log.info(f"RAG引擎初始化，检索模式: {self.retrieval_mode}")
+        self.embed_engine = embed_engine
+        self.api_client = api_client
+        self.top_k = top_k
+        self.retrieval_mode = retrieval_mode
 
-    def load_settings(self, settings):
-        self.settings = settings
-        self.retrieval_mode = settings.get("retrieval_mode", "hybrid")
-        if settings.get("api_key"):
-            self._init_api_client(settings)
-            log.info(f"API客户端已配置: {settings.get('api_provider')}")
-
-    def _init_api_client(self, settings):
-        self.api_client = APIClient(
-            provider=settings.get("api_provider", "qwen"),
-            api_key=settings.get("api_key", ""),
-            base_url=settings.get("api_base_url", ""),
-            model=settings.get("api_model", ""),
-        )
-
-    def is_model_loaded(self):
-        return self.api_client is not None
-
-    def get_model_status(self):
-        if self.api_client:
-            return {
-                "loaded": True,
-                "type": "api",
-                "provider": self.api_client.provider,
-                "model": self.api_client.model,
-            }
-        return {"loaded": False, "message": "未配置API，请在设置中填写API密钥"}
-
-    def retrieve(self, query, top_k=5):
-        log.info(f"检索: query='{query[:50]}...' top_k={top_k} mode={self.retrieval_mode}")
+    def retrieve(self, query: str):
+        """检索相关文档片段"""
         chunks = self.db.get_all_chunks_with_embeddings()
         if not chunks:
-            log.warning("知识库为空，无法检索")
+            logger.warning("知识库为空，没有可检索的chunk")
             return []
 
+        chunk_texts = [row["content"] for row in chunks]
+        chunk_ids = [row["id"] for row in chunks]
+
         if self.retrieval_mode == "bm25":
-            results = self.embedding_engine.search_bm25(query, chunks, top_k)
+            results = self.embed_engine.search_bm25(query, chunk_texts, chunk_ids, self.top_k)
         elif self.retrieval_mode == "hybrid":
-            results = self.embedding_engine.search_hybrid(
-                query, chunks, top_k,
-                vector_weight=self.settings.get("vector_weight", 0.7),
-                bm25_weight=self.settings.get("bm25_weight", 0.3),
+            results = self.embed_engine.search_hybrid(
+                query, chunk_texts, chunk_ids, self.top_k,
+                vector_weight=0.7, bm25_weight=0.3
             )
         else:
-            query_emb = self.embedding_engine.embed_text(query)
-            results = self.embedding_engine.search_similar(
-                query_emb, chunks, top_k=top_k,
-                threshold=self.settings.get("similarity_threshold", 0.3),
-            )
-        
-        log.info(f"检索完成: 找到 {len(results)} 个结果")
-        return results
+            results = self.embed_engine.search_similar(query, chunk_texts, chunk_ids, self.top_k)
 
-    def set_retrieval_mode(self, mode):
-        if mode in ("vector", "bm25", "hybrid"):
-            self.retrieval_mode = mode
-            return True
-        return False
+        sources = []
+        for r in results:
+            chunk_id = r["chunk_id"]
+            score = r["score"]
+            # 找到对应的完整chunk信息
+            chunk_info = None
+            for row in chunks:
+                if row["id"] == chunk_id:
+                    chunk_info = row
+                    break
 
-    def _build_prompt(self, query, context_chunks, history=None):
-        context = "\n\n".join(["[%d] %s" % (i+1, c['chunk']['content'][:800]) for i, c in enumerate(context_chunks)])
-        system_msg = "你是一个知识库助手，请根据提供的参考资料准确回答用户的问题。回答要完整、有条理。如果参考资料中没有相关信息，请说明。"
-        messages = [{"role": "system", "content": system_msg}]
-        if history:
-            for h in history[-6:]:
-                messages.append({"role": "user", "content": h["user"]})
-                messages.append({"role": "assistant", "content": h["assistant"]})
-        user_msg = "参考资料：\n%s\n\n问题：%s" % (context, query)
-        messages.append({"role": "user", "content": user_msg})
-        return messages
+            if chunk_info:
+                sources.append({
+                    "chunk_id": chunk_id,
+                    "score": round(score, 4),
+                    "content": chunk_info["content"],
+                    "document_id": chunk_info.get("document_id", ""),
+                    "file_type": chunk_info.get("file_type", ""),
+                    "file_path": chunk_info.get("file_path", ""),
+                    "original_name": chunk_info.get("original_name", "未知文件"),
+                    "chunk_index": chunk_info.get("chunk_index", 0),
+                    "total_chunks": chunk_info.get("total_chunks", 0),
+                })
 
-    def _get_no_model_msg(self, context_chunks):
-        context = "\n".join(["[%d] %s" % (i+1, c['chunk']['content'][:200]) for i, c in enumerate(context_chunks)])
-        return "根据知识库检索到以下相关内容：\n\n%s\n\n（提示：未配置API，请在设置中填写API密钥以启用智能回答。）" % context
+        logger.info(f"检索完成: query='{query[:30]}...', 找到{len(sources)}个结果")
+        return sources
 
-    def generate_answer(self, query, context_chunks, history=None):
-        if not self.api_client:
-            log.warning("未配置API，返回检索结果")
-            return self._get_no_model_msg(context_chunks)
+    def query(self, question: str) -> dict:
+        """完整问答流程（同步）"""
+        sources = self.retrieve(question)
+        if not sources:
+            return {
+                "answer": "未在知识库中找到相关内容。请先上传相关文档到知识库中。",
+                "sources": [],
+            }
 
-        messages = self._build_prompt(query, context_chunks, history)
-        try:
-            log.info(f"调用API生成回答: {self.api_client.provider}/{self.api_client.model}")
-            answer = self.api_client.chat(
-                messages,
-                temperature=self.settings.get("temperature", 0.7),
-                max_tokens=self.settings.get("max_tokens", 1024),
-            )
-            log.info(f"API回答生成完成: {len(answer)} 字符")
-            return answer
-        except Exception as e:
-            log.error(f"API调用失败: {e}")
-            return "API调用失败: %s" % str(e)
+        if self.api_client.is_local:
+            answer = self._format_local_answer(question, sources)
+        else:
+            context = self._build_context(sources)
+            messages = self._build_messages(question, context)
+            answer = self.api_client.chat(messages)
 
-    def generate_answer_stream(self, query, context_chunks, history=None):
-        if not self.api_client:
-            yield self._get_no_model_msg(context_chunks)
+        return {"answer": answer, "sources": sources}
+
+    def query_stream(self, question: str):
+        """完整问答流程（流式）"""
+        sources = self.retrieve(question)
+        if not sources:
+            yield from self._yield_text("未在知识库中找到相关内容。请先上传相关文档到知识库中。")
             return
 
-        messages = self._build_prompt(query, context_chunks, history)
-        try:
-            for chunk in self.api_client.chat(
-                messages,
-                temperature=self.settings.get("temperature", 0.7),
-                max_tokens=self.settings.get("max_tokens", 1024),
-                stream=True,
-            ):
+        if self.api_client.is_local:
+            for chunk in self._format_local_answer_stream(question, sources):
                 yield chunk
-        except Exception as e:
-            yield "API调用失败: %s" % str(e)
+        else:
+            context = self._build_context(sources)
+            messages = self._build_messages(question, context)
+            for chunk in self.api_client.chat(messages, stream=True):
+                yield chunk
 
-    def query(self, query, top_k=5, history=None):
-        results = self.retrieve(query, top_k)
-        if not results:
-            return {"answer": "未找到相关知识，请尝试其他问题。", "sources": []}
-        answer = self.generate_answer(query, results, history)
-        sources = []
-        for r in results:
-            chunk = r["chunk"]
-            sources.append({
-                "chunk_id": chunk["id"],
-                "document": chunk.get("original_name", "Unknown"),
-                "content_preview": chunk["content"][:300],
-                "score": round(r["score"], 4),
-            })
-        return {"answer": answer, "sources": sources, "retrieval_mode": self.retrieval_mode}
+    def _build_context(self, sources: list) -> str:
+        """构建上下文文本"""
+        parts = []
+        for i, s in enumerate(sources, 1):
+            filename = s.get("original_name", "未知")
+            parts.append(f"[来源{i}] 文件: {filename}\n{s['content']}")
+        return "\n\n".join(parts)
 
-    def query_stream(self, query, top_k=5, history=None):
-        results = self.retrieve(query, top_k)
-        if not results:
-            yield {"type": "answer", "content": "未找到相关知识，请尝试其他问题。"}
-            yield {"type": "sources", "content": []}
-            return
-        sources = []
-        for r in results:
-            chunk = r["chunk"]
-            sources.append({
-                "chunk_id": chunk["id"],
-                "document": chunk.get("original_name", "Unknown"),
-                "content_preview": chunk["content"][:300],
-                "score": round(r["score"], 4),
-            })
-        yield {"type": "sources", "content": sources}
-        for chunk in self.generate_answer_stream(query, results, history):
-            yield {"type": "answer", "content": chunk}
+    def _build_messages(self, question: str, context: str) -> list:
+        """构建LLM消息"""
+        system_prompt = (
+            "你是一个知识库问答助手。请根据以下参考资料回答用户的问题。\n"
+            "要求：\n"
+            "1. 如果参考资料中有答案，请基于参考资料进行回答，并在回答中引用相关来源（如'[来源1]'）\n"
+            "2. 如果参考资料不足以回答问题，请诚实说明\n"
+            "3. 回答要简洁、准确、有条理\n"
+            "4. 使用中文回答"
+        )
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"参考资料：\n{context}\n\n问题：{question}"},
+        ]
+
+    def _format_local_answer(self, question: str, sources: list) -> str:
+        """仅检索模式：格式化检索结果为回答"""
+        lines = []
+        lines.append(f"🔍 **关于「{question}」的检索结果**\n")
+        lines.append(f"共找到 {len(sources)} 个相关片段：\n")
+
+        for i, s in enumerate(sources, 1):
+            filename = s.get("original_name", "未知")
+            score = s.get("score", 0)
+            chunk_idx = s.get("chunk_index", 0)
+            total = s.get("total_chunks", 0)
+            content = s.get("content", "")
+
+            relevance = "★★★★★" if score >= 0.8 else "★★★★☆" if score >= 0.6 else "★★★☆☆" if score >= 0.4 else "★★☆☆☆"
+
+            lines.append(f"---")
+            lines.append(f"### 📄 来源{i}：{filename}  (片段 {chunk_idx+1}/{total})")
+            lines.append(f"📊 相关度: {relevance} ({score:.2%})")
+            lines.append(f"")
+            lines.append(f"{content}")
+            lines.append(f"")
+
+        lines.append(f"---")
+        lines.append(f"💡 **提示**: 这是基于关键词匹配+语义相似度从知识库中检索到的原始内容。")
+        lines.append(f"如需AI总结，请切换到云端API或安装Ollama本地模型。")
+
+        return "\n".join(lines)
+
+    def _format_local_answer_stream(self, question: str, sources: list):
+        """仅检索模式：流式输出格式化结果"""
+        lines = self._format_local_answer(question, sources).split("\n")
+        for line in lines:
+            yield line + "\n"
+
+    def _yield_text(self, text: str):
+        """将文本逐字yield（模拟流式效果）"""
+        for i in range(0, len(text), 3):
+            yield text[i:i+3]
+
+    def generate_answer(self, question: str, sources: list):
+        """使用LLM基于检索结果生成回答"""
+        if self.api_client.is_local:
+            return self._format_local_answer(question, sources)
+        context = self._build_context(sources)
+        messages = self._build_messages(question, context)
+        return self.api_client.chat(messages)
+
+    def generate_answer_stream(self, question: str, sources: list):
+        if self.api_client.is_local:
+            for chunk in self._format_local_answer_stream(question, sources):
+                yield chunk
+        else:
+            context = self._build_context(sources)
+            messages = self._build_messages(question, context)
+            for chunk in self.api_client.chat(messages, stream=True):
+                yield chunk

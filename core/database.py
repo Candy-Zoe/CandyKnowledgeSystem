@@ -78,6 +78,14 @@ class DatabaseManager:
         conn.close()
         return [dict(r) for r in rows]
 
+    def delete_document_chunks(self, doc_id) -> bool:
+        """删除文档的所有分块（保留文档记录本身）"""
+        conn = self.get_connection()
+        conn.execute("DELETE FROM chunks WHERE document_id=?", (doc_id,))
+        conn.commit()
+        conn.close()
+        return True
+
     def delete_document(self, doc_id) -> bool:
         conn = self.get_connection()
         conn.execute("DELETE FROM chunks WHERE document_id=?", (doc_id,))
@@ -118,8 +126,10 @@ class DatabaseManager:
 
     def get_all_chunks_with_embeddings(self) -> list:
         conn = self.get_connection()
+        # 联表查询，额外获取文档的 file_type、file_path、original_name、total_chunks 字段
         rows = conn.execute(
-            "SELECT c.*, d.original_name FROM chunks c JOIN documents d ON c.document_id=d.id WHERE c.embedding IS NOT NULL"
+            "SELECT c.*, d.original_name, d.file_type, d.file_path, d.total_chunks FROM chunks c "
+            "JOIN documents d ON c.document_id=d.id WHERE c.embedding IS NOT NULL"
         ).fetchall()
         conn.close()
         result = []

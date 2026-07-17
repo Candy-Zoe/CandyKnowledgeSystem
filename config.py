@@ -33,9 +33,9 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_SETTINGS = {
-    "api_provider": "qwen",
+    "api_provider": "local",       # 默认：仅检索模式，无需API Key
     "api_key": "",
-    "api_model": "qwen-turbo",
+    "api_model": "retrieve-only",
     "api_base_url": "",
     "chunk_strategy": "semantic",
     "chunk_size": 512,

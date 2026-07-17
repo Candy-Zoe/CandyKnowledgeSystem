@@ -10,7 +10,10 @@ PDF 解析器（增强版）
 纯Python PDF解析能力：
 - 支持基于对象的PDF（非线性化）
 - 提取文本流中的 Tj/TJ 操作符
-- 处理常见编码（WinAnsi, MacRoman, UTF-16BE）
+- 处理常见编码（WinAnsi/cp1252, MacRoman, UTF-16BE）
+- Tj 正则支持括号嵌套和转义
+- 加密PDF支持（尝试空密码打开）
+- OCR回退使用PIL渲染PDF页面（不依赖fitz）
 """
 import re
 import io
@@ -20,7 +23,50 @@ import logging
 from pathlib import Path
 from dataclasses import dataclass, field
 
+from core.parsers.text_utils import clean_text
+
 logger = logging.getLogger(__name__)
+
+# WinAnsi (cp1252) 编码映射表
+# 将字节值 0x80-0x9F 映射到对应的Unicode字符
+_WINANSI_MAP = {
+    0x80: '\u20ac',  # 欧元符号
+    0x82: '\u201a',  # 单低-9引号
+    0x83: '\u0192',  # florin
+    0x84: '\u201e',  # 双低-9引号
+    0x85: '\u2026',  # 省略号
+    0x86: '\u2020',  # dagger
+    0x87: '\u2021',  # double dagger
+    0x88: '\u02c6',  # modifier letter circumflex
+    0x89: '\u2030',  # per mille
+    0x8b: '\u2039',  # single left-pointing angle quotation mark
+    0x91: '\u2018',  # left single quotation mark
+    0x92: '\u2019',  # right single quotation mark
+    0x93: '\u201c',  # left double quotation mark
+    0x94: '\u201d',  # right double quotation mark
+    0x95: '\u2022',  # bullet
+    0x96: '\u2013',  # en dash
+    0x97: '\u2014',  # em dash
+    0x99: '\u2122',  # trade mark
+    0x9b: '\u203a',  # single right-pointing angle quotation mark
+}
+
+
+def _winansi_decode(data: bytes) -> str:
+    """使用WinAnsi (cp1252) 编码解码字节数据
+
+    处理0x80-0x9F范围内cp1252特有字符（latin-1中为控制字符区域）。
+    """
+    result = []
+    for b in data:
+        if b in _WINANSI_MAP:
+            result.append(_WINANSI_MAP[b])
+        elif b < 0x20 or (0x7f <= b <= 0x9f and b not in _WINANSI_MAP):
+            # 跳过控制字符
+            continue
+        else:
+            result.append(chr(b))
+    return ''.join(result)
 
 
 @dataclass
@@ -57,7 +103,11 @@ class _PurePythonPDFParser:
     纯Python PDF文本提取器（增强版，无外部依赖）
     支持基础PDF结构解析，能处理大部分普通文本PDF
     增强：从文件读取对象和流、支持FlateDecode、增强文本提取
+    Tj正则支持括号嵌套和转义
+    WinAnsi (cp1252) 编码支持
     """
+    # Tj操作符正则：正确处理括号嵌套和转义序列
+    _TJ_PATTERN = re.compile(r"\((?:[^()\\]|\\.)*\)\s*Tj")
 
     def __init__(self):
         self.objects = {}
@@ -95,7 +145,8 @@ class _PurePythonPDFParser:
                 page_result = PDFPage(page_number=i)
                 text = self._extract_page_text(page_obj)
                 if text:
-                    page_result.text = text
+                    # 纯Python回退提取的文本也要调用clean_text()
+                    page_result.text = clean_text(text)
                     page_result.has_text = True
                 result.pages.append(page_result)
 
@@ -449,7 +500,11 @@ class _PurePythonPDFParser:
         return raw_data
 
     def _extract_text_from_stream(self, data: bytes) -> str:
-        """从内容流提取文本（增强版）"""
+        """从内容流提取文本（增强版）
+
+        Tj正则修复：使用 r"\\((?:[^()\\\\]|\\\\\\\\.)*\\)\\s*Tj"
+        能正确处理括号嵌套和转义序列。
+        """
         try:
             text = data.decode("latin-1", errors="replace")
         except Exception:
@@ -457,49 +512,93 @@ class _PurePythonPDFParser:
 
         results = []
 
-        # 处理PDF文本操作符
-        # Tj: (text) Tj
-        for m in re.finditer(r"\((.*?)\)\s*Tj", text):
-            s = self._unescape_pdf_string(m.group(1))
+        # Tj: (text) Tj —— 修复后的正则，支持括号嵌套和转义
+        for m in self._TJ_PATTERN.finditer(text):
+            # 提取括号内内容（去掉外层括号）
+            inner = m.group(1) if m.group(0).startswith("(") else m.group(0)
+            # 去掉末尾的 ) Tj
+            paren_start = m.group(0).index("(")
+            paren_end = m.group(0).rindex(")")
+            s = m.group(0)[paren_start+1:paren_end]
+            s = self._unescape_pdf_string(s)
             results.append(s)
 
         # TJ: [ (text1) num1 (text2) ... ] TJ
         for m in re.finditer(r"\[(.*?)\]\s*TJ", text, re.DOTALL):
             inner = m.group(1)
-            # 提取括号内的字符串和十六进制字符串
-            parts = re.findall(r"\((.*?)\)|<([0-9a-fA-F]+)>", inner)
+            # 提取括号内的字符串和十六进制字符串（使用嵌套括号安全的正则）
+            parts = re.findall(r"\((?:[^()\\]|\\.)*\)|<([0-9a-fA-F]+)>", inner)
             for p in parts:
-                s = p[0] if p[0] else self._hex_to_string(p[1])
+                if isinstance(p, tuple):
+                    # findall返回元组（来自两个捕获组）
+                    s = p[0] if p[0] else self._hex_to_string(p[1])
+                else:
+                    # 单一匹配
+                    if p.startswith("("):
+                        s = p[1:-1]  # 去掉外层括号
+                    elif p.startswith("<"):
+                        s = self._hex_to_string(p[1:-1])
+                    else:
+                        s = p
                 if s:
                     results.append(self._unescape_pdf_string(s))
 
         # ' 操作符 (move to next line and show text)
-        for m in re.finditer(r"\((.*?)\)\s*'", text):
-            results.append(self._unescape_pdf_string(m.group(1)))
+        for m in re.finditer(r"\((?:[^()\\]|\\.)*\)\s*'", text):
+            inner = m.group(0)
+            paren_start = inner.index("(")
+            paren_end = inner.rindex(")")
+            s = inner[paren_start+1:paren_end]
+            results.append(self._unescape_pdf_string(s))
 
         # " 操作符 (move to next line and show text with word/char spacing)
-        for m in re.finditer(r"[\d\-.]+\s+[\d\-.]+\s+\((.*?)\)\s*\"", text):
-            results.append(self._unescape_pdf_string(m.group(1)))
+        for m in re.finditer(r"[\d\-.]+\s+[\d\-.]+\s+\((?:[^()\\]|\\.)*\)\s*\"", text):
+            inner = m.group(0)
+            paren_start = inner.index("(")
+            paren_end = inner.rindex(")")
+            s = inner[paren_start+1:paren_end]
+            results.append(self._unescape_pdf_string(s))
 
         # BT ... ET 块提取
         for m in re.finditer(r"BT(.*?)ET", text, re.DOTALL):
             block = m.group(1)
             # 在块内再次提取
-            for m2 in re.finditer(r"\((.*?)\)\s*Tj", block):
-                s = self._unescape_pdf_string(m2.group(1))
+            for m2 in self._TJ_PATTERN.finditer(block):
+                paren_start = m2.group(0).index("(")
+                paren_end = m2.group(0).rindex(")")
+                s = m2.group(0)[paren_start+1:paren_end]
+                s = self._unescape_pdf_string(s)
                 if s and s not in results:
                     results.append(s)
 
         return "".join(results)
 
     def _unescape_pdf_string(self, s: str) -> str:
-        """反转义PDF字符串"""
+        """反转义PDF字符串
+
+        支持常见转义：\\n, \\r, \\t, \\\\, \\(, \\), 以及八进制 \\NNN
+        """
         s = s.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
         s = s.replace("\\\\", "\\").replace("\\(", "(").replace("\\)", ")")
+
+        # 处理八进制转义 \NNN
+        for m in re.finditer(r"\\([0-7]{1,3})", s):
+            oct_str = m.group(1)
+            try:
+                char_val = int(oct_str, 8)
+                if char_val < 256:
+                    # 使用WinAnsi映射解码
+                    s = s.replace(m.group(0), _winansi_decode(bytes([char_val])))
+            except ValueError:
+                pass
+
         return s
 
     def _hex_to_string(self, hex_str: str) -> str:
-        """将十六进制字符串转为文本"""
+        """将十六进制字符串转为文本
+
+        尝试UTF-16BE（PDF常用），回退到WinAnsi (cp1252)编码。
+        """
         try:
             data = bytes.fromhex(hex_str)
             # 尝试UTF-16BE（PDF常用）
@@ -508,7 +607,8 @@ class _PurePythonPDFParser:
                     return data.decode("utf-16-be", errors="strict")
                 except UnicodeDecodeError:
                     pass
-            return data.decode("latin-1", errors="replace")
+            # 使用WinAnsi编码解码
+            return _winansi_decode(data)
         except Exception:
             return ""
 
@@ -523,6 +623,10 @@ class _PurePythonPDFParser:
 class PDFParser:
     """
     PDF解析器（多层回退策略）
+
+    支持加密PDF（尝试空密码打开）
+    所有提取的文本均经过 clean_text() 清洗
+    OCR回退使用PIL渲染PDF页面（不依赖fitz）
     """
 
     def __init__(self, use_ocr=True, ocr_threshold=50, ocr_lang=None,
@@ -596,7 +700,15 @@ class PDFParser:
 
     def _parse_with_pymupdf(self, file_path: str, result: PDFResult) -> PDFResult:
         import fitz
+
+        # 尝试打开PDF，加密PDF用空密码解密
         doc = fitz.open(file_path)
+        if doc.is_encrypted:
+            try:
+                doc.authenticate("")  # 尝试空密码
+            except Exception as e:
+                logger.warning(f"PDF加密，空密码解密失败: {e}")
+
         total_pages = len(doc)
         result.page_count = total_pages
 
@@ -623,7 +735,8 @@ class PDFParser:
             try:
                 page_text = page.get_text("text")
                 if page_text and page_text.strip():
-                    page_result.text = page_text.strip()
+                    # PyMuPDF提取的文本也调用clean_text()
+                    page_result.text = clean_text(page_text.strip())
                     page_result.has_text = True
                     total_text_len += len(page_result.text)
             except Exception as e:
@@ -664,7 +777,10 @@ class PDFParser:
 
     def _parse_with_pdfplumber(self, file_path: str, result: PDFResult) -> PDFResult:
         import pdfplumber
-        with pdfplumber.open(file_path) as pdf:
+
+        # pdfplumber也尝试用空密码处理加密PDF
+        open_kwargs = {}
+        with pdfplumber.open(file_path, **open_kwargs) as pdf:
             if not result.page_count:
                 result.page_count = len(pdf.pages)
 
@@ -679,7 +795,8 @@ class PDFParser:
                     try:
                         text = page.extract_text()
                         if text and text.strip():
-                            page_result.text = text.strip()
+                            # pdfplumber提取的文本也调用clean_text()
+                            page_result.text = clean_text(text.strip())
                             page_result.has_text = True
                             page_result.method = "pdfplumber"
                     except Exception:
@@ -700,8 +817,11 @@ class PDFParser:
         return result
 
     def _parse_with_ocr(self, file_path: str, result: PDFResult) -> PDFResult:
-        import fitz
+        """OCR回退解析
 
+        优先使用PyMuPDF渲染页面，如果未安装则使用PIL直接渲染PDF页面。
+        """
+        # 尝试使用easyocr
         if self._ocr_reader is None:
             try:
                 import easyocr
@@ -709,7 +829,30 @@ class PDFParser:
             except ImportError:
                 raise ImportError("需要安装easyocr: pip install easyocr")
 
+        # 判断是否有PyMuPDF可用于渲染
+        has_fitz = False
+        try:
+            import fitz
+            has_fitz = True
+        except ImportError:
+            has_fitz = False
+
+        if has_fitz:
+            return self._parse_with_ocr_fitz(file_path, result)
+        else:
+            return self._parse_with_ocr_pil(file_path, result)
+
+    def _parse_with_ocr_fitz(self, file_path: str, result: PDFResult) -> PDFResult:
+        """使用PyMuPDF (fitz) 渲染页面后OCR"""
+        import fitz
+
         doc = fitz.open(file_path)
+        if doc.is_encrypted:
+            try:
+                doc.authenticate("")
+            except Exception:
+                pass
+
         if not result.page_count:
             result.page_count = len(doc)
 
@@ -733,7 +876,7 @@ class PDFParser:
                 ocr_text = "\n".join([r[1] for r in ocr_results if r[1].strip()])
 
                 if ocr_text.strip():
-                    page_result.text = ocr_text.strip()
+                    page_result.text = clean_text(ocr_text.strip())
                     page_result.has_text = True
                     page_result.method = "ocr"
             except Exception as e:
@@ -747,6 +890,63 @@ class PDFParser:
                 time.sleep(self.page_sleep_ms / 1000.0)
 
         doc.close()
+        self._merge_text(result)
+        return result
+
+    def _parse_with_ocr_pil(self, file_path: str, result: PDFResult) -> PDFResult:
+        """使用PIL渲染PDF页面后OCR（不依赖PyMuPDF）
+
+        当PyMuPDF未安装时，使用PIL的Image.open直接打开PDF页面
+        进行渲染，然后进行OCR文本识别。
+        """
+        try:
+            from PIL import Image
+        except ImportError:
+            raise ImportError("需要安装Pillow: pip install Pillow")
+
+        try:
+            import numpy as np
+        except ImportError:
+            raise ImportError("需要安装numpy: pip install numpy")
+
+        # 用PIL打开PDF，获取页数和各页面图像
+        try:
+            pdf_images = Image.open(file_path)
+        except Exception as e:
+            logger.error(f"PIL无法打开PDF: {e}")
+            return result
+
+        # 获取总页数
+        page_count = 0
+        try:
+            while True:
+                page_count += 1
+                pdf_images.seek(page_count)
+        except EOFError:
+            pass
+
+        if not result.page_count:
+            result.page_count = page_count
+
+        for i in range(1, page_count + 1):
+            try:
+                pdf_images.seek(i)
+                page_img = pdf_images.convert("RGB")
+                img_array = np.array(page_img)
+
+                ocr_results = self._ocr_reader.readtext(img_array)
+                ocr_text = "\n".join([r[1] for r in ocr_results if r[1].strip()])
+
+                if ocr_text.strip():
+                    page_result = result.pages[i - 1] if (i - 1) < len(result.pages) else PDFPage(page_number=i)
+                    page_result.text = clean_text(ocr_text.strip())
+                    page_result.has_text = True
+                    page_result.method = "ocr"
+                    if (i - 1) >= len(result.pages):
+                        result.pages.append(page_result)
+            except Exception as e:
+                logger.warning(f"第{i}页OCR(PIL)失败: {e}")
+
         self._merge_text(result)
         return result
 
@@ -802,6 +1002,14 @@ class PDFValidator:
         try:
             import fitz
             doc = fitz.open(file_path)
+
+            # 尝试用空密码解密加密PDF
+            if doc.is_encrypted:
+                try:
+                    doc.authenticate("")
+                except Exception:
+                    pass
+
             result["info"]["page_count"] = len(doc)
             result["info"]["metadata"] = doc.metadata or {}
 

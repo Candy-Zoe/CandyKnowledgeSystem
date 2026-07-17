@@ -40,12 +40,18 @@ class QAWorker(QObject):
             results = rag.retrieve(self.question, top_k=5)
             log.info(f"检索到 {len(results)} 个相关分块")
 
+            # 构建引用信息，包含文档和分块的详细字段
             sources = []
             for r in results:
                 chunk = r["chunk"]
                 sources.append({
                     "chunk_id": chunk["id"],
+                    "document_id": chunk.get("document_id"),
                     "document": chunk.get("original_name", "Unknown"),
+                    "file_type": chunk.get("file_type", ""),
+                    "file_path": chunk.get("file_path", ""),
+                    "chunk_index": chunk.get("chunk_index", 0),
+                    "total_chunks": chunk.get("total_chunks", 0),
                     "content_preview": chunk["content"][:300],
                     "score": round(r["score"], 4),
                 })

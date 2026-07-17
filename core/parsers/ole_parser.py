@@ -13,11 +13,16 @@ OLE 文档解析器（纯Python实现，增强版）
 - 多层回退策略：结构化解析 -> 二进制扫描 -> 编码探测
 - 支持UTF-16LE、GBK、GB2312、ASCII等多种编码自动识别
 - 智能段落边界检测
+- 所有解析结果经过 clean_text() 清洗
+- CONTINUE记录处理（XLS共享字符串表续接）
+- PPT记录头正确步进解析
 """
 import struct
 import re
 import logging
 from pathlib import Path
+
+from core.parsers.text_utils import clean_text
 
 logger = logging.getLogger(__name__)
 
@@ -281,32 +286,40 @@ class OleDocParser:
     """旧版DOC文件解析器（增强版）"""
 
     def parse(self, file_path: str) -> str:
-        path = Path(file_path)
-        if not path.exists():
-            raise FileNotFoundError(f"文件不存在: {file_path}")
-
         try:
-            ole = _OleFileReader(file_path)
-            ole.open()
+            path = Path(file_path)
+            if not path.exists():
+                raise FileNotFoundError(f"文件不存在: {file_path}")
 
-            word_stream = ole.find_stream("WordDocument")
-            if not word_stream:
-                streams = ole.list_streams()
-                for s in streams:
-                    if "word" in s.lower():
-                        word_stream = ole.find_stream(s)
-                        break
+            try:
+                ole = _OleFileReader(file_path)
+                ole.open()
 
-            if word_stream and len(word_stream) > 100:
-                result = self._extract_text_from_word_stream(word_stream)
-                if result and len(result) > 20:
-                    return result
+                word_stream = ole.find_stream("WordDocument")
+                if not word_stream:
+                    streams = ole.list_streams()
+                    for s in streams:
+                        if "word" in s.lower():
+                            word_stream = ole.find_stream(s)
+                            break
 
+                if word_stream and len(word_stream) > 100:
+                    result = self._extract_text_from_word_stream(word_stream)
+                    if result and len(result) > 20:
+                        return clean_text(result)
+
+            except Exception as e:
+                logger.warning(f"OLE结构化解析DOC失败: {e}")
+
+            # 回退：通用二进制文本提取
+            return clean_text(_BinaryTextExtractor.extract(self._read_file_bytes(file_path)))
+
+        except FileNotFoundError:
+            raise
         except Exception as e:
-            logger.warning(f"OLE结构化解析DOC失败: {e}")
-
-        # 回退：通用二进制文本提取
-        return _BinaryTextExtractor.extract(self._read_file_bytes(file_path))
+            logger.error(f"DOC解析异常: {e}")
+            # 最终回退：二进制扫描
+            return clean_text(_BinaryTextExtractor.extract(self._read_file_bytes(file_path)))
 
     def _read_file_bytes(self, file_path: str) -> bytes:
         with open(file_path, "rb") as f:
@@ -322,16 +335,9 @@ class OleDocParser:
         if w_ident != 0xA5EC:
             return ""
 
-        # FIB结构关键字段（Word 97+）
-        # 偏移0x18: ccpText (文档文本字符数)
-        # 偏移0x20: fcMin (文本起始位置)
-        # 偏移0x24: ccpText
-        # 注意：FIB版本不同偏移不同，这里尝试常用偏移
-
         texts = []
 
         # 尝试从常见文本区域提取UTF-16LE文本
-        # Word文档文本通常在偏移0x200之后
         text_regions = [
             (0x200, min(len(data), 0x100000)),  # 前1MB
         ]
@@ -341,7 +347,6 @@ class OleDocParser:
             if not region:
                 continue
             try:
-                # 尝试UTF-16LE解码
                 decoded = region.decode("utf-16-le", errors="ignore")
                 pattern = re.compile(
                     r"[\u4e00-\u9fff\uff00-\uffef\u3000-\u303f"
@@ -375,49 +380,69 @@ class OlePptParser:
     """旧版PPT文件解析器（增强版）"""
 
     def parse(self, file_path: str) -> str:
-        path = Path(file_path)
-        if not path.exists():
-            raise FileNotFoundError(f"文件不存在: {file_path}")
-
         try:
-            ole = _OleFileReader(file_path)
-            ole.open()
+            path = Path(file_path)
+            if not path.exists():
+                raise FileNotFoundError(f"文件不存在: {file_path}")
 
-            ppt_stream = ole.find_stream("PowerPoint Document")
-            if not ppt_stream:
-                streams = ole.list_streams()
-                for s in streams:
-                    if "powerpoint" in s.lower():
-                        ppt_stream = ole.find_stream(s)
-                        break
+            try:
+                ole = _OleFileReader(file_path)
+                ole.open()
 
-            if ppt_stream and len(ppt_stream) > 100:
-                result = self._extract_text_from_ppt_stream(ppt_stream)
-                if result and len(result) > 20:
-                    return result
+                ppt_stream = ole.find_stream("PowerPoint Document")
+                if not ppt_stream:
+                    streams = ole.list_streams()
+                    for s in streams:
+                        if "powerpoint" in s.lower():
+                            ppt_stream = ole.find_stream(s)
+                            break
 
+                if ppt_stream and len(ppt_stream) > 100:
+                    result = self._extract_text_from_ppt_stream(ppt_stream)
+                    if result and len(result) > 20:
+                        return clean_text(result)
+
+            except Exception as e:
+                logger.warning(f"OLE结构化解析PPT失败: {e}")
+
+            return clean_text(_BinaryTextExtractor.extract(self._read_file_bytes(file_path)))
+
+        except FileNotFoundError:
+            raise
         except Exception as e:
-            logger.warning(f"OLE结构化解析PPT失败: {e}")
-
-        return _BinaryTextExtractor.extract(self._read_file_bytes(file_path))
+            logger.error(f"PPT解析异常: {e}")
+            return clean_text(_BinaryTextExtractor.extract(self._read_file_bytes(file_path)))
 
     def _read_file_bytes(self, file_path: str) -> bytes:
         with open(file_path, "rb") as f:
             return f.read()
 
     def _extract_text_from_ppt_stream(self, data: bytes) -> str:
-        """从PPT流提取文本（增强版）"""
+        """从PPT流提取文本（增强版）
+
+        正确解析PPT记录头：2字节类型 + 2字节版本 + 4字节长度 = 8字节头
+        解析后按 pos += 8 + rec_len 步进到下一条记录
+        """
         texts = []
 
         # PPT中的文本Atom类型：0x0FA0 (TextCharsAtom) 和 0x0FA1 (TextBytesAtom)
         pos = 0
         while pos < len(data) - 8:
-            # 尝试读取记录头 (4字节类型 + 4字节大小)
+            # 读取记录头：2字节类型 + 2字节版本 + 4字节长度
             rec_type = struct.unpack("<H", data[pos:pos+2])[0]
+            # rec_version = struct.unpack("<H", data[pos+2:pos+4])[0]  # 版本号，暂不使用
             rec_len = struct.unpack("<I", data[pos+4:pos+8])[0]
 
+            # 安全检查：记录长度不能超出数据范围
+            if pos + 8 + rec_len > len(data):
+                # 如果接近文件末尾，尝试只读取可用数据
+                if pos + 8 <= len(data):
+                    rec_len = min(rec_len, len(data) - pos - 8)
+                else:
+                    break
+
             # TextCharsAtom = 0x0FA0 (Unicode)
-            if rec_type == 0x0FA0 and pos + 8 + rec_len <= len(data):
+            if rec_type == 0x0FA0:
                 try:
                     text = data[pos+8:pos+8+rec_len].decode("utf-16-le", errors="ignore")
                     if text.strip() and len(text.strip()) > 1:
@@ -428,7 +453,7 @@ class OlePptParser:
                 continue
 
             # TextBytesAtom = 0x0FA1 (ANSI)
-            if rec_type == 0x0FA1 and pos + 8 + rec_len <= len(data):
+            if rec_type == 0x0FA1:
                 try:
                     text = data[pos+8:pos+8+rec_len].decode("latin-1", errors="ignore")
                     if text.strip() and len(text.strip()) > 1:
@@ -438,7 +463,8 @@ class OlePptParser:
                 pos += 8 + rec_len
                 continue
 
-            pos += 1
+            # 正确步进：跳过当前记录（8字节头 + 记录体）
+            pos += 8 + rec_len
 
         if texts:
             return _BinaryTextExtractor._merge_and_deduplicate(texts)
@@ -451,36 +477,49 @@ class OleXlsParser:
     """旧版XLS文件解析器（增强版）"""
 
     def parse(self, file_path: str) -> str:
-        path = Path(file_path)
-        if not path.exists():
-            raise FileNotFoundError(f"文件不存在: {file_path}")
-
         try:
-            ole = _OleFileReader(file_path)
-            ole.open()
+            path = Path(file_path)
+            if not path.exists():
+                raise FileNotFoundError(f"文件不存在: {file_path}")
 
-            workbook = ole.find_stream("Workbook")
-            if not workbook:
-                workbook = ole.find_stream("Book")
+            try:
+                ole = _OleFileReader(file_path)
+                ole.open()
 
-            if workbook and len(workbook) > 100:
-                result = self._extract_text_from_workbook(workbook)
-                if result and len(result) > 20:
-                    return result
+                workbook = ole.find_stream("Workbook")
+                if not workbook:
+                    workbook = ole.find_stream("Book")
 
+                if workbook and len(workbook) > 100:
+                    result = self._extract_text_from_workbook(workbook)
+                    if result and len(result) > 20:
+                        return clean_text(result)
+
+            except Exception as e:
+                logger.warning(f"OLE结构化解析XLS失败: {e}")
+
+            return clean_text(_BinaryTextExtractor.extract(self._read_file_bytes(file_path)))
+
+        except FileNotFoundError:
+            raise
         except Exception as e:
-            logger.warning(f"OLE结构化解析XLS失败: {e}")
-
-        return _BinaryTextExtractor.extract(self._read_file_bytes(file_path))
+            logger.error(f"XLS解析异常: {e}")
+            return clean_text(_BinaryTextExtractor.extract(self._read_file_bytes(file_path)))
 
     def _read_file_bytes(self, file_path: str) -> bytes:
         with open(file_path, "rb") as f:
             return f.read()
 
     def _extract_text_from_workbook(self, data: bytes) -> str:
-        """从Excel BIFF结构提取文本（增强版）"""
+        """从Excel BIFF结构提取文本（增强版）
+
+        支持CONTINUE记录 (0x003C)：当SST记录过长时，BIFF格式会用
+        CONTINUE记录续接数据，需将其追加到前一个SST记录的字符串数据中。
+        """
         texts = []
         pos = 0
+        # SST记录的未完成字符串数据，等待CONTINUE记录续接
+        sst_remainder = b""
 
         while pos < len(data) - 4:
             rec_type = struct.unpack("<H", data[pos:pos+2])[0]
@@ -490,6 +529,21 @@ class OleXlsParser:
                 break
 
             rec_data = data[pos+4:pos+4+rec_len]
+
+            # CONTINUE = 0x003C，将其数据追加到前一个SST的字符串数据中
+            if rec_type == 0x003C:
+                if sst_remainder:
+                    # 将CONTINUE数据追加到SST残余数据后继续解析
+                    combined = sst_remainder + rec_data
+                    self._parse_sst_strings(combined, texts)
+                    sst_remainder = b""
+                pos += 4 + rec_len
+                continue
+
+            # 如果有残余SST数据但不是CONTINUE，先处理残余
+            if sst_remainder:
+                self._parse_sst_strings(sst_remainder, texts)
+                sst_remainder = b""
 
             # LABEL = 0x0204 (BIFF3-BIFF8)
             if rec_type == 0x0204 and len(rec_data) > 6:
@@ -522,6 +576,7 @@ class OleXlsParser:
                     total_refs = struct.unpack("<I", rec_data[0:4])[0]
                     total_strs = struct.unpack("<I", rec_data[4:8])[0]
                     str_pos = 8
+                    extracted_count = 0
                     for _ in range(min(total_strs, 5000)):  # 限制数量
                         if str_pos + 2 > len(rec_data):
                             break
@@ -531,16 +586,24 @@ class OleXlsParser:
                             break
                         opts = rec_data[str_pos]
                         str_pos += 1
+
+                        # 计算字符串数据所需字节数
+                        char_bytes = str_len * 2 if opts & 1 else str_len
+
+                        if str_pos + char_bytes > len(rec_data):
+                            # 数据不完整，保存残余数据等待CONTINUE记录
+                            sst_remainder = rec_data[str_pos:]
+                            break
+
                         if opts & 1:  # Unicode
-                            if str_pos + str_len * 2 <= len(rec_data):
-                                s = rec_data[str_pos:str_pos+str_len*2].decode("utf-16-le", errors="ignore")
-                                texts.append(s)
-                            str_pos += str_len * 2
+                            s = rec_data[str_pos:str_pos+str_len*2].decode("utf-16-le", errors="ignore")
+                            texts.append(s)
                         else:
-                            if str_pos + str_len <= len(rec_data):
-                                s = rec_data[str_pos:str_pos+str_len].decode("latin-1", errors="ignore")
-                                texts.append(s)
-                            str_pos += str_len
+                            s = rec_data[str_pos:str_pos+str_len].decode("latin-1", errors="ignore")
+                            texts.append(s)
+                        str_pos += char_bytes
+                        extracted_count += 1
+
                         # 跳过可选的富文本/拼音信息
                         if opts & 4:  # Rich text
                             if str_pos + 4 <= len(rec_data):
@@ -553,12 +616,56 @@ class OleXlsParser:
                 except Exception:
                     pass
 
-            # FORMULA STRING = 0x0207 已处理
-            # CONTINUE记录 = 0x003C，跳过
-
             pos += 4 + rec_len
+
+        # 处理最后残余的SST数据
+        if sst_remainder:
+            self._parse_sst_strings(sst_remainder, texts)
 
         if texts:
             return _BinaryTextExtractor._merge_and_deduplicate(texts)
 
         return _BinaryTextExtractor.extract(data)
+
+    @staticmethod
+    def _parse_sst_strings(data: bytes, texts: list):
+        """解析SST续接数据（来自CONTINUE记录或截断的SST数据）
+
+        尝试从拼接的数据中提取剩余的字符串。
+        """
+        try:
+            str_pos = 0
+            while str_pos < len(data):
+                if str_pos + 2 > len(data):
+                    break
+                str_len = struct.unpack("<H", data[str_pos:str_pos+2])[0]
+                str_pos += 2
+                if str_pos >= len(data):
+                    break
+                opts = data[str_pos]
+                str_pos += 1
+
+                char_bytes = str_len * 2 if opts & 1 else str_len
+
+                if str_pos + char_bytes > len(data):
+                    break
+
+                if opts & 1:
+                    s = data[str_pos:str_pos+char_bytes].decode("utf-16-le", errors="ignore")
+                else:
+                    s = data[str_pos:str_pos+char_bytes].decode("latin-1", errors="ignore")
+                if s.strip():
+                    texts.append(s)
+                str_pos += char_bytes
+
+                # 跳过可选的富文本/拼音信息
+                if opts & 4:  # Rich text
+                    if str_pos + 4 <= len(data):
+                        rt_len = struct.unpack("<H", data[str_pos:str_pos+2])[0]
+                        str_pos += 4 + rt_len * 4
+                if opts & 8:  # Far East phonetic
+                    if str_pos + 4 <= len(data):
+                        fe_len = struct.unpack("<I", data[str_pos:str_pos+4])[0]
+                        str_pos += 4 + fe_len
+        except Exception:
+            pass
