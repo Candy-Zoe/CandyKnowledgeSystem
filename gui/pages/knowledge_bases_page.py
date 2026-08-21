@@ -83,7 +83,7 @@ class KnowledgeBasesPage(QWidget):
         kb_id = int(self.table.item(row, 0).text())
         try:
             db = DatabaseManager(str(config.DB_PATH))
-            docs = [d for d in db.list_documents() if d.get("kb_id") == kb_id]
+            docs = db.list_documents_by_knowledge_base(kb_id)
             self.doc_table.setRowCount(len(docs))
             for r, doc in enumerate(docs):
                 self.doc_table.setItem(r, 0, QTableWidgetItem(str(doc["id"])))

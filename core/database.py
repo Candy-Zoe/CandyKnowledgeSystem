@@ -16,6 +16,20 @@ class DatabaseManager:
         has_default_kb = cursor.execute("SELECT COUNT(*) FROM knowledge_bases WHERE id=1").fetchone()[0]
         if not has_default_kb:
             cursor.execute("INSERT OR IGNORE INTO knowledge_bases (id, name, description) VALUES (1, '默认知识库', '默认知识库')")
+        cursor.execute(
+            """INSERT OR IGNORE INTO document_knowledge_bases (document_id, kb_id)
+               SELECT d.id, d.kb_id
+               FROM documents d
+               JOIN knowledge_bases k ON d.kb_id=k.id"""
+        )
+        cursor.execute(
+            """INSERT OR IGNORE INTO document_knowledge_bases (document_id, kb_id)
+               SELECT d.id, 1
+               FROM documents d
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM document_knowledge_bases dkb WHERE dkb.document_id=d.id
+               )"""
+        )
         conn.commit()
         conn.close()
 
@@ -38,6 +52,11 @@ class DatabaseManager:
                 (filename, original_name, file_type, file_size, file_path)
             )
         doc_id = cursor.lastrowid
+        target_kb_id = kb_id or 1
+        cursor.execute(
+            "INSERT OR IGNORE INTO document_knowledge_bases (document_id, kb_id) VALUES (?, ?)",
+            (doc_id, target_kb_id),
+        )
         conn.commit()
         conn.close()
         return doc_id
@@ -68,10 +87,41 @@ class DatabaseManager:
 
     def list_documents(self, status=None) -> list:
         conn = self.get_connection()
+        where = ""
+        params = []
         if status:
-            rows = conn.execute("SELECT * FROM documents WHERE status=? ORDER BY created_at DESC", (status,)).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM documents ORDER BY created_at DESC").fetchall()
+            where = "WHERE d.status=?"
+            params.append(status)
+        rows = conn.execute(
+            f"""SELECT d.*,
+                       GROUP_CONCAT(k.id) AS kb_ids,
+                       GROUP_CONCAT(k.name, ', ') AS kb_names
+                FROM documents d
+                LEFT JOIN document_knowledge_bases dkb ON d.id=dkb.document_id
+                LEFT JOIN knowledge_bases k ON dkb.kb_id=k.id
+                {where}
+                GROUP BY d.id
+                ORDER BY d.created_at DESC""",
+            params,
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def list_documents_by_knowledge_base(self, kb_id: int) -> list:
+        conn = self.get_connection()
+        rows = conn.execute(
+            """SELECT d.*,
+                      GROUP_CONCAT(k.id) AS kb_ids,
+                      GROUP_CONCAT(k.name, ', ') AS kb_names
+               FROM documents d
+               JOIN document_knowledge_bases selected ON d.id=selected.document_id
+               LEFT JOIN document_knowledge_bases dkb ON d.id=dkb.document_id
+               LEFT JOIN knowledge_bases k ON dkb.kb_id=k.id
+               WHERE selected.kb_id=?
+               GROUP BY d.id
+               ORDER BY d.created_at DESC""",
+            (kb_id,),
+        ).fetchall()
         conn.close()
         return [dict(r) for r in rows]
 
@@ -85,6 +135,7 @@ class DatabaseManager:
 
     def delete_document(self, doc_id) -> bool:
         conn = self.get_connection()
+        conn.execute("DELETE FROM document_knowledge_bases WHERE document_id=?", (doc_id,))
         conn.execute("DELETE FROM chunks WHERE document_id=?", (doc_id,))
         conn.execute("DELETE FROM documents WHERE id=?", (doc_id,))
         conn.commit()
@@ -139,7 +190,7 @@ class DatabaseManager:
             params = [fts_query]
             kb_clause = ""
             if kb_id:
-                kb_clause = " AND d.kb_id=?"
+                kb_clause = " AND EXISTS (SELECT 1 FROM document_knowledge_bases dkb WHERE dkb.document_id=d.id AND dkb.kb_id=?)"
                 params.append(kb_id)
             params.append(limit)
             rows = conn.execute(
@@ -159,7 +210,7 @@ class DatabaseManager:
             params = [f"%{t}%" for t in terms]
             kb_clause = ""
             if kb_id:
-                kb_clause = " AND d.kb_id=?"
+                kb_clause = " AND EXISTS (SELECT 1 FROM document_knowledge_bases dkb WHERE dkb.document_id=d.id AND dkb.kb_id=?)"
                 params.append(kb_id)
             params.append(limit)
             rows = conn.execute(
@@ -247,8 +298,30 @@ class DatabaseManager:
 
     def delete_knowledge_base(self, kb_id) -> bool:
         conn = self.get_connection()
-        conn.execute("UPDATE documents SET kb_id=NULL WHERE kb_id=?", (kb_id,))
+        conn.execute("DELETE FROM document_knowledge_bases WHERE kb_id=?", (kb_id,))
         conn.execute("DELETE FROM knowledge_bases WHERE id=?", (kb_id,))
+        conn.commit()
+        conn.close()
+        return True
+
+    def add_document_to_knowledge_base(self, doc_id: int, kb_id: int) -> bool:
+        conn = self.get_connection()
+        conn.execute(
+            "INSERT OR IGNORE INTO document_knowledge_bases (document_id, kb_id) VALUES (?, ?)",
+            (doc_id, kb_id),
+        )
+        conn.commit()
+        conn.close()
+        return True
+
+    def move_document_to_knowledge_base(self, doc_id: int, kb_id: int) -> bool:
+        conn = self.get_connection()
+        conn.execute("DELETE FROM document_knowledge_bases WHERE document_id=?", (doc_id,))
+        conn.execute(
+            "INSERT OR IGNORE INTO document_knowledge_bases (document_id, kb_id) VALUES (?, ?)",
+            (doc_id, kb_id),
+        )
+        conn.execute("UPDATE documents SET kb_id=? WHERE id=?", (kb_id, doc_id))
         conn.commit()
         conn.close()
         return True
@@ -277,6 +350,15 @@ CREATE TABLE IF NOT EXISTS documents (
     FOREIGN KEY (kb_id) REFERENCES knowledge_bases(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS document_knowledge_bases (
+    document_id INTEGER NOT NULL,
+    kb_id INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (document_id, kb_id),
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+    FOREIGN KEY (kb_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS chunks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     document_id INTEGER NOT NULL,
@@ -288,6 +370,8 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_kbs_document_id ON document_knowledge_bases(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_kbs_kb_id ON document_knowledge_bases(kb_id);
 CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
 CREATE INDEX IF NOT EXISTS idx_documents_kb_id ON documents(kb_id);
 

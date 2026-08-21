@@ -1,9 +1,12 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QLineEdit, QComboBox, QTableWidget, QTableWidgetItem,
-    QDialog, QPlainTextEdit, QMessageBox
+    QDialog, QTextEdit, QMessageBox
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
+import html
+import re
 import sys
 import os
 
@@ -13,14 +16,16 @@ from core.database import DatabaseManager
 
 
 class SearchResultDialog(QDialog):
-    def __init__(self, result: dict, parent=None):
+    def __init__(self, result: dict, keywords=None, parent=None):
         super().__init__(parent)
+        self.result = result
+        self.keywords = keywords or []
         self.setWindowTitle(f"原文预览 - {result.get('original_name', '')}")
         self.setMinimumSize(900, 650)
         self.setStyleSheet("""
             QDialog { background-color: #1e1e2e; color: #cdd6f4; }
             QLabel { color: #cdd6f4; }
-            QPlainTextEdit {
+            QTextEdit {
                 background-color: #313244;
                 color: #cdd6f4;
                 border: 1px solid #45475a;
@@ -42,7 +47,8 @@ class SearchResultDialog(QDialog):
         info = QLabel(
             f"文件: {result.get('original_name', '')} | "
             f"类型: {result.get('file_type', '')} | "
-            f"片段: {result.get('chunk_index', 0) + 1}/{result.get('total_chunks', 0)}"
+            f"片段: {result.get('chunk_index', 0) + 1}/{result.get('total_chunks', 0)} | "
+            f"页码: {self._page_text()}"
         )
         info.setStyleSheet("color: #a6adc8; font-size: 13px;")
         layout.addWidget(info)
@@ -52,27 +58,83 @@ class SearchResultDialog(QDialog):
         path_label.setWordWrap(True)
         layout.addWidget(path_label)
 
-        text = QPlainTextEdit()
+        text = QTextEdit()
         text.setReadOnly(True)
-        text.setPlainText(self._format_context(result))
+        text.setHtml(self._format_context_html(result, self.keywords))
         layout.addWidget(text, 1)
 
+        btn_row = QHBoxLayout()
+        open_btn = QPushButton("打开原文")
+        open_btn.clicked.connect(self.open_original)
         close_btn = QPushButton("关闭")
         close_btn.clicked.connect(self.close)
-        layout.addWidget(close_btn, alignment=Qt.AlignRight)
+        btn_row.addStretch()
+        btn_row.addWidget(open_btn)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+    def _page_text(self):
+        page = self._infer_page_number(self.result)
+        return str(page) if page else "未检测到"
+
+    def open_original(self):
+        file_path = self.result.get("file_path", "")
+        if not file_path or not os.path.exists(file_path):
+            QMessageBox.warning(self, "打开失败", "原文件不存在或路径不可用")
+            return
+
+        page = self._infer_page_number(self.result)
+        if self.result.get("file_type") == "pdf" and page:
+            url = QUrl.fromLocalFile(file_path)
+            url.setFragment(f"page={page}")
+        else:
+            url = QUrl.fromLocalFile(file_path)
+
+        if not QDesktopServices.openUrl(url):
+            QMessageBox.warning(self, "打开失败", "无法调用系统默认程序打开原文")
 
     @staticmethod
-    def _format_context(result: dict) -> str:
+    def _format_context_html(result: dict, keywords: list) -> str:
         context = result.get("context") or [result]
         parts = []
         target_id = result.get("id")
         for chunk in context:
             marker = "命中片段" if chunk.get("id") == target_id else "上下文片段"
-            parts.append(
+            text = (
                 f"[{marker} {chunk.get('chunk_index', 0) + 1}]\n"
                 f"{chunk.get('content', '')}"
             )
-        return "\n\n".join(parts)
+            parts.append(SearchResultDialog._highlight_html(text, keywords))
+        return "<br><br>".join(parts)
+
+    @staticmethod
+    def _highlight_html(text: str, keywords: list) -> str:
+        escaped = html.escape(text).replace("\n", "<br>")
+        terms = sorted([t for t in keywords if t], key=len, reverse=True)
+        for term in terms:
+            pattern = re.escape(html.escape(term))
+            escaped = re.sub(
+                pattern,
+                lambda m: (
+                    "<span style=\"color:#1e1e2e; background-color:#f9e2af; "
+                    "font-weight:700; padding:1px 3px;\">"
+                    + m.group(0)
+                    + "</span>"
+                ),
+                escaped,
+                flags=re.IGNORECASE,
+            )
+        return escaped
+
+    @staticmethod
+    def _infer_page_number(result: dict):
+        texts = [result.get("content", "")]
+        texts.extend([c.get("content", "") for c in result.get("context", [])])
+        for text in texts:
+            match = re.search(r"\[第\s*(\d+)\s*页\]", text or "")
+            if match:
+                return int(match.group(1))
+        return None
 
 
 class SearchPage(QWidget):
@@ -125,11 +187,14 @@ class SearchPage(QWidget):
         layout.addWidget(self.table, 1)
 
         btn_row = QHBoxLayout()
-        open_btn = QPushButton("查看原文")
+        open_btn = QPushButton("预览原文")
         open_btn.clicked.connect(self.open_selected)
+        open_file_btn = QPushButton("打开原文")
+        open_file_btn.clicked.connect(self.open_original_file)
         refresh_btn = QPushButton("刷新知识库")
         refresh_btn.clicked.connect(self.load_knowledge_bases)
         btn_row.addWidget(open_btn)
+        btn_row.addWidget(open_file_btn)
         btn_row.addWidget(refresh_btn)
         btn_row.addStretch()
         layout.addLayout(btn_row)
@@ -192,7 +257,27 @@ class SearchPage(QWidget):
         try:
             db = DatabaseManager(str(config.DB_PATH))
             detail = db.get_chunk_context(self.results[row]["id"], radius=2)
-            dialog = SearchResultDialog(detail, self)
+            dialog = SearchResultDialog(detail, keywords=self._current_terms(), parent=self)
             dialog.exec()
         except Exception as e:
             QMessageBox.warning(self, "打开失败", str(e))
+
+    def open_original_file(self):
+        row = self.table.currentRow()
+        if row < 0 or row >= len(self.results):
+            QMessageBox.information(self, "提示", "请先选择一条结果")
+            return
+        try:
+            db = DatabaseManager(str(config.DB_PATH))
+            detail = db.get_chunk_context(self.results[row]["id"], radius=2)
+            dialog = SearchResultDialog(detail, keywords=self._current_terms(), parent=self)
+            dialog.open_original()
+        except Exception as e:
+            QMessageBox.warning(self, "打开失败", str(e))
+
+    def _current_terms(self):
+        return [
+            t.strip()
+            for t in self.keyword_input.text().replace("，", " ").replace(",", " ").replace("；", " ").replace(";", " ").split()
+            if t.strip()
+        ]

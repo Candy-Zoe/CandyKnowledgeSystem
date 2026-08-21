@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QTableWidget, QTableWidgetItem, QLineEdit, QComboBox,
-    QMessageBox, QDialog, QPlainTextEdit
+    QMessageBox, QDialog, QPlainTextEdit, QInputDialog
 )
 from PySide6.QtCore import Qt
 import sys
@@ -68,8 +68,8 @@ class DocumentsPage(QWidget):
         layout.addLayout(filter_row)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(7)
-        self.table.setHorizontalHeaderLabels(["ID", "文件名", "类型", "大小", "分块数", "状态", "创建时间"])
+        self.table.setColumnCount(8)
+        self.table.setHorizontalHeaderLabels(["ID", "文件名", "知识库", "类型", "大小", "分块数", "状态", "创建时间"])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -79,9 +79,15 @@ class DocumentsPage(QWidget):
         btn_row = QHBoxLayout()
         view_btn = QPushButton("👁 查看内容")
         view_btn.clicked.connect(self.view_document)
+        copy_btn = QPushButton("复制到知识库")
+        copy_btn.clicked.connect(self.copy_to_knowledge_base)
+        move_btn = QPushButton("移动到知识库")
+        move_btn.clicked.connect(self.move_to_knowledge_base)
         delete_btn = QPushButton("🗑 删除选中")
         delete_btn.clicked.connect(self.delete_selected)
         btn_row.addWidget(view_btn)
+        btn_row.addWidget(copy_btn)
+        btn_row.addWidget(move_btn)
         btn_row.addWidget(delete_btn)
         btn_row.addStretch()
         layout.addLayout(btn_row)
@@ -104,10 +110,8 @@ class DocumentsPage(QWidget):
     def load_documents(self):
         try:
             db = DatabaseManager(str(config.DB_PATH))
-            docs = db.list_documents()
             kb_id = self.kb_filter.currentData()
-            if kb_id:
-                docs = [d for d in docs if d.get("kb_id") == kb_id]
+            docs = db.list_documents_by_knowledge_base(kb_id) if kb_id else db.list_documents()
             self.populate_table(docs)
         except Exception as e:
             print(f"加载文档失败: {e}")
@@ -117,10 +121,11 @@ class DocumentsPage(QWidget):
         for row, doc in enumerate(docs):
             self.table.setItem(row, 0, QTableWidgetItem(str(doc["id"])))
             self.table.setItem(row, 1, QTableWidgetItem(doc["original_name"]))
-            self.table.setItem(row, 2, QTableWidgetItem(doc["file_type"]))
+            self.table.setItem(row, 2, QTableWidgetItem(doc.get("kb_names") or "未关联"))
+            self.table.setItem(row, 3, QTableWidgetItem(doc["file_type"]))
             size_mb = doc["file_size"] / (1024 * 1024)
-            self.table.setItem(row, 3, QTableWidgetItem(f"{size_mb:.2f} MB"))
-            self.table.setItem(row, 4, QTableWidgetItem(str(doc.get("total_chunks", 0))))
+            self.table.setItem(row, 4, QTableWidgetItem(f"{size_mb:.2f} MB"))
+            self.table.setItem(row, 5, QTableWidgetItem(str(doc.get("total_chunks", 0))))
             status_item = QTableWidgetItem(doc["status"])
             if doc["status"] == "completed":
                 status_item.setForeground(Qt.green)
@@ -128,18 +133,16 @@ class DocumentsPage(QWidget):
                 status_item.setForeground(Qt.red)
             elif doc["status"] == "edit_failed":
                 status_item.setForeground(Qt.red)
-            self.table.setItem(row, 5, status_item)
-            self.table.setItem(row, 6, QTableWidgetItem(doc.get("created_at", "")))
+            self.table.setItem(row, 6, status_item)
+            self.table.setItem(row, 7, QTableWidgetItem(doc.get("created_at", "")))
         self.table.resizeColumnsToContents()
 
     def filter_documents(self):
         keyword = self.search_input.text().lower()
         try:
             db = DatabaseManager(str(config.DB_PATH))
-            docs = db.list_documents()
             kb_id = self.kb_filter.currentData()
-            if kb_id:
-                docs = [d for d in docs if d.get("kb_id") == kb_id]
+            docs = db.list_documents_by_knowledge_base(kb_id) if kb_id else db.list_documents()
             if keyword:
                 docs = [d for d in docs if keyword in d["original_name"].lower()]
             self.populate_table(docs)
@@ -166,20 +169,74 @@ class DocumentsPage(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "错误", str(e))
 
+    def _selected_doc_ids(self) -> list:
+        rows = sorted(set(idx.row() for idx in self.table.selectedIndexes()))
+        doc_ids = []
+        for row in rows:
+            item = self.table.item(row, 0)
+            if item:
+                doc_ids.append(int(item.text()))
+        return doc_ids
+
+    def _choose_knowledge_base(self, title: str):
+        db = DatabaseManager(str(config.DB_PATH))
+        kbs = db.list_knowledge_bases()
+        if not kbs:
+            QMessageBox.information(self, "提示", "请先创建知识库")
+            return None
+        labels = [f"{kb['id']} - {kb['name']}" for kb in kbs]
+        label, ok = QInputDialog.getItem(self, title, "目标知识库:", labels, 0, False)
+        if not ok or not label:
+            return None
+        return int(label.split(" - ", 1)[0])
+
+    def copy_to_knowledge_base(self):
+        doc_ids = self._selected_doc_ids()
+        if not doc_ids:
+            QMessageBox.information(self, "提示", "请先选择一个或多个文档")
+            return
+        kb_id = self._choose_knowledge_base("复制到知识库")
+        if not kb_id:
+            return
+        try:
+            db = DatabaseManager(str(config.DB_PATH))
+            for doc_id in doc_ids:
+                db.add_document_to_knowledge_base(doc_id, kb_id)
+            self.load_documents()
+            QMessageBox.information(self, "完成", f"已复制关联 {len(doc_ids)} 个文档到目标知识库")
+        except Exception as e:
+            QMessageBox.warning(self, "错误", str(e))
+
+    def move_to_knowledge_base(self):
+        doc_ids = self._selected_doc_ids()
+        if not doc_ids:
+            QMessageBox.information(self, "提示", "请先选择一个或多个文档")
+            return
+        kb_id = self._choose_knowledge_base("移动到知识库")
+        if not kb_id:
+            return
+        try:
+            db = DatabaseManager(str(config.DB_PATH))
+            for doc_id in doc_ids:
+                db.move_document_to_knowledge_base(doc_id, kb_id)
+            self.load_documents()
+            QMessageBox.information(self, "完成", f"已移动 {len(doc_ids)} 个文档到目标知识库")
+        except Exception as e:
+            QMessageBox.warning(self, "错误", str(e))
+
     def delete_selected(self):
-        rows = set(idx.row() for idx in self.table.selectedIndexes())
-        if not rows:
+        doc_ids = self._selected_doc_ids()
+        if not doc_ids:
             return
         reply = QMessageBox.question(
             self, "确认删除",
-            f"确定要删除选中的 {len(rows)} 个文档吗？",
+            f"确定要删除选中的 {len(doc_ids)} 个文档吗？",
             QMessageBox.Yes | QMessageBox.No
         )
         if reply == QMessageBox.Yes:
             try:
                 db = DatabaseManager(str(config.DB_PATH))
-                for row in rows:
-                    doc_id = int(self.table.item(row, 0).text())
+                for doc_id in doc_ids:
                     db.delete_document(doc_id)
                 self.load_documents()
             except Exception as e:
