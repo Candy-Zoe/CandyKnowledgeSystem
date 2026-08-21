@@ -1,6 +1,7 @@
 import io
 import csv
 import re
+import zipfile
 from pathlib import Path
 from core.logger import log
 
@@ -346,6 +347,9 @@ class DocumentParser:
 
         try:
             result = parser(file_path)
+            assets_text = self._extract_embedded_assets(file_path, file_type)
+            if assets_text:
+                result = f"{result}\n\n{assets_text}" if result else assets_text
             # 数据质量检查
             quality = self._check_quality(result, file_type)
             log.info(f"解析完成: {file_path} -> {len(result)} 字符, 质量: {quality['level']}")
@@ -596,6 +600,51 @@ class DocumentParser:
         from pathlib import Path
         filename = Path(file_path).name
         return f"[代码文件: {filename}]\n{text}"
+
+    def _extract_embedded_assets(self, file_path: str, file_type: str) -> str:
+        """提取容器类文档中的嵌入资源清单。
+
+        这里不依赖 Office 专用库，只读取 ZIP 目录结构，把图片、音频、
+        视频等资源的位置写入索引文本，便于后续关键词检索定位。
+        """
+        zip_based = {
+            "docx", "dotx", "dotm",
+            "pptx", "potx", "potm",
+            "xlsx", "xlsm", "xltx", "xlam",
+            "epub", "odt", "ods", "odp",
+        }
+        if file_type not in zip_based or not zipfile.is_zipfile(file_path):
+            return ""
+
+        image_exts = {"jpg", "jpeg", "png", "bmp", "gif", "tiff", "tif", "webp", "emf", "wmf", "svg"}
+        audio_exts = self.AUDIO_EXTENSIONS
+        video_exts = self.VIDEO_EXTENSIONS
+        lines = []
+
+        try:
+            with zipfile.ZipFile(file_path, "r") as zf:
+                for name in zf.namelist():
+                    ext = Path(name).suffix.lower().lstrip(".")
+                    if ext in image_exts:
+                        kind = "图片"
+                    elif ext in audio_exts:
+                        kind = "音频"
+                    elif ext in video_exts:
+                        kind = "视频"
+                    else:
+                        continue
+                    try:
+                        size = zf.getinfo(name).file_size
+                    except Exception:
+                        size = 0
+                    lines.append(f"[嵌入{kind}] {name} ({size} bytes)")
+        except Exception as e:
+            log.warning(f"嵌入资源扫描失败: {file_path} - {e}")
+            return ""
+
+        if not lines:
+            return ""
+        return "[嵌入资源]\n" + "\n".join(lines)
 
     @staticmethod
     def get_metadata(file_path: str, file_type: str) -> dict:

@@ -1,19 +1,8 @@
 {
-  "model_source": "local",
-  "local_model_path": "",
-  "api_provider": "qwen",
-  "api_key": "",
-  "api_model": "qwen-turbo",
-  "api_base_url": "",
   "chunk_strategy": "semantic",
   "chunk_size": 512,
   "chunk_overlap": 64,
-  "retrieval_mode": "vector",
-  "vector_weight": 0.7,
-  "bm25_weight": 0.3,
-  "top_k": 5,
-  "similarity_threshold": 0.3,
-  "embedding_model": "BAAI/bge-small-zh-v1.5",
-  "temperature": 0.7,
-  "max_tokens": 1024
+  "page_sleep_ms": 100,
+  "max_pdf_pages": 500,
+  "max_file_size_mb": 200
 }

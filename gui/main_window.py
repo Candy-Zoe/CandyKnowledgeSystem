@@ -46,12 +46,10 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(sep)
 
         nav_items = [
-            ("📤 上传文档", "upload"),
-            ("📄 文档管理", "documents"),
-            ("📚 知识库", "knowledge_bases"),
-            ("❓ 智能问答", "qa"),
-            ("📦 批量问答", "batch_qa"),
-            ("💬 对话历史", "conversations"),
+            ("上传文档", "upload"),
+            ("内容检索", "search"),
+            ("文档管理", "documents"),
+            ("知识库", "knowledge_bases"),
         ]
 
         from gui.widgets.nav_button import NavButton
@@ -91,17 +89,13 @@ class MainWindow(QMainWindow):
     def create_page(self, page_id):
         from gui.pages.upload_page import UploadPage
         from gui.pages.documents_page import DocumentsPage
-        from gui.pages.qa_page import QAPage
-        from gui.pages.batch_qa_page import BatchQAPage
-        from gui.pages.conversations_page import ConversationsPage
+        from gui.pages.search_page import SearchPage
         from gui.pages.knowledge_bases_page import KnowledgeBasesPage
 
         page_map = {
             "upload": UploadPage,
+            "search": SearchPage,
             "documents": DocumentsPage,
-            "qa": QAPage,
-            "batch_qa": BatchQAPage,
-            "conversations": ConversationsPage,
             "knowledge_bases": KnowledgeBasesPage,
         }
         return page_map[page_id]()

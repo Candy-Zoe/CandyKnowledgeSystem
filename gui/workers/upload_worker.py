@@ -7,7 +7,6 @@ import config
 from core.database import DatabaseManager
 from core.document_parser import DocumentParser
 from core.text_processor import TextProcessor
-from core.embedding_engine import EmbeddingEngine
 from core.logger import log
 
 
@@ -33,26 +32,19 @@ class UploadWorker(QObject):
             db = DatabaseManager(str(config.DB_PATH))
             settings = config.load_settings()
 
-            # 从设置中读取 CPU 节流参数
-            torch_threads = settings.get("torch_threads", config.DEFAULT_SETTINGS["torch_threads"])
+            # 从设置中读取解析节流参数
             page_sleep_ms = settings.get("page_sleep_ms", config.DEFAULT_SETTINGS["page_sleep_ms"])
             max_pdf_pages = settings.get("max_pdf_pages", config.DEFAULT_SETTINGS["max_pdf_pages"])
-            embedding_batch_size = settings.get("embedding_batch_size", config.DEFAULT_SETTINGS["embedding_batch_size"])
 
-            log.info(f"CPU 节流设置: threads={torch_threads}, sleep={page_sleep_ms}ms, "
-                     f"max_pages={max_pdf_pages}, batch_size={embedding_batch_size}")
+            log.info(f"解析设置: sleep={page_sleep_ms}ms, max_pages={max_pdf_pages}")
 
             parser = DocumentParser(max_pages=max_pdf_pages, page_sleep_ms=page_sleep_ms)
             text_processor = TextProcessor(
                 settings.get("chunk_size", config.CHUNK_SIZE),
-                settings.get("chunk_overlap", config.CHUNK_OVERLAP)
+                settings.get("chunk_overlap", config.CHUNK_OVERLAP),
+                settings.get("chunk_strategy", config.CHUNK_STRATEGY),
             )
-            emb_engine = EmbeddingEngine(
-                settings.get("embedding_model", config.EMBEDDING_MODEL),
-                torch_threads=torch_threads,
-                batch_size=embedding_batch_size
-            )
-            log.info("初始化完成: 数据库、解析器、分词器、嵌入引擎")
+            log.info("初始化完成: 数据库、解析器、分块器")
 
             for i, file_path in enumerate(self.file_paths):
                 if self._cancelled:
@@ -105,16 +97,6 @@ class UploadWorker(QObject):
                         log.warning(f"  {filename}: 文本分块失败")
                         continue
                     log.info(f"  分块完成: {len(chunks)} 个块")
-
-                    self.progress.emit(i, 50)
-                    self.page_progress.emit(f"正在生成嵌入 ({len(chunks)} 块)...")
-
-                    contents = [c["content"] for c in chunks]
-                    embeddings = emb_engine.embed_batch(contents)
-                    log.info(f"  嵌入生成完成")
-
-                    for j, chunk in enumerate(chunks):
-                        chunk["embedding"] = embeddings[j]
 
                     self.progress.emit(i, 80)
                     self.page_progress.emit("正在保存到数据库...")

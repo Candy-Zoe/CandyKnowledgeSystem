@@ -1,12 +1,10 @@
 PySide6>=6.6.0
+tiktoken>=0.7.0
+numpy>=1.24.0
+
+# Optional PDF fallback parsers. The built-in PDF parser runs first.
 pymupdf>=1.24.0
 pdfplumber>=0.11.0
-python-docx>=1.1.0
+
+# Optional text encoding detection used by some parsers.
 chardet>=5.0.0
-tiktoken>=0.7.0
-sentence-transformers>=3.0.0
-numpy>=1.24.0
-torch>=2.0.0
-requests>=2.31.0
-python-dotenv>=1.0.0
-tqdm>=4.60.0

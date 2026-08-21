@@ -1,7 +1,4 @@
 import sqlite3
-import json
-import numpy as np
-from pathlib import Path
 from datetime import datetime
 
 
@@ -89,7 +86,6 @@ class DatabaseManager:
     def delete_document(self, doc_id) -> bool:
         conn = self.get_connection()
         conn.execute("DELETE FROM chunks WHERE document_id=?", (doc_id,))
-        conn.execute("DELETE FROM training_pairs WHERE document_id=?", (doc_id,))
         conn.execute("DELETE FROM documents WHERE id=?", (doc_id,))
         conn.commit()
         conn.close()
@@ -100,12 +96,9 @@ class DatabaseManager:
         cursor = conn.cursor()
         ids = []
         for chunk in chunks:
-            embedding_blob = None
-            if chunk.get("embedding") is not None:
-                embedding_blob = chunk["embedding"].astype(np.float32).tobytes()
             cursor.execute(
-                "INSERT INTO chunks (document_id, chunk_index, content, token_count, embedding) VALUES (?, ?, ?, ?, ?)",
-                (document_id, chunk["chunk_index"], chunk["content"], chunk.get("token_count", 0), embedding_blob)
+                "INSERT INTO chunks (document_id, chunk_index, content, token_count) VALUES (?, ?, ?, ?)",
+                (document_id, chunk["chunk_index"], chunk["content"], chunk.get("token_count", 0))
             )
             ids.append(cursor.lastrowid)
         conn.commit()
@@ -116,169 +109,126 @@ class DatabaseManager:
         conn = self.get_connection()
         rows = conn.execute("SELECT * FROM chunks WHERE document_id=? ORDER BY chunk_index", (doc_id,)).fetchall()
         conn.close()
-        result = []
-        for r in rows:
-            d = dict(r)
-            if d["embedding"]:
-                d["embedding"] = np.frombuffer(d["embedding"], dtype=np.float32)
-            result.append(d)
-        return result
-
-    def get_all_chunks_with_embeddings(self) -> list:
-        conn = self.get_connection()
-        # 联表查询，额外获取文档的 file_type、file_path、original_name、total_chunks 字段
-        rows = conn.execute(
-            "SELECT c.*, d.original_name, d.file_type, d.file_path, d.total_chunks FROM chunks c "
-            "JOIN documents d ON c.document_id=d.id WHERE c.embedding IS NOT NULL"
-        ).fetchall()
-        conn.close()
-        result = []
-        for r in rows:
-            d = dict(r)
-            d["embedding"] = np.frombuffer(d["embedding"], dtype=np.float32)
-            result.append(d)
-        return result
-
-    def search_chunks_by_ids(self, chunk_ids: list) -> list:
-        if not chunk_ids:
-            return []
-        conn = self.get_connection()
-        placeholders = ",".join("?" * len(chunk_ids))
-        rows = conn.execute(f"SELECT * FROM chunks WHERE id IN ({placeholders})", chunk_ids).fetchall()
-        conn.close()
-        result = []
-        for r in rows:
-            d = dict(r)
-            if d["embedding"]:
-                d["embedding"] = np.frombuffer(d["embedding"], dtype=np.float32)
-            result.append(d)
-        return result
-
-    def create_training_pair(self, question, answer, source_chunk_ids=None, document_id=None, is_generated=False) -> int:
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO training_pairs (question, answer, source_chunk_ids, document_id, is_generated) VALUES (?, ?, ?, ?, ?)",
-            (question, answer, json.dumps(source_chunk_ids) if source_chunk_ids else None, document_id, int(is_generated))
-        )
-        pair_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return pair_id
-
-    def list_training_pairs(self) -> list:
-        conn = self.get_connection()
-        rows = conn.execute("SELECT * FROM training_pairs ORDER BY created_at DESC").fetchall()
-        conn.close()
         return [dict(r) for r in rows]
 
-    def delete_training_pair(self, pair_id) -> bool:
-        conn = self.get_connection()
-        conn.execute("DELETE FROM training_pairs WHERE id=?", (pair_id,))
-        conn.commit()
-        conn.close()
-        return True
+    def search_content(self, keywords: str, kb_id=None, match_mode="all", limit=500) -> list:
+        """按一个或多个关键词检索知识库分块。
 
-    def export_to_json(self, output_path: str):
-        conn = self.get_connection()
-        data = {}
-        for table in ["documents", "chunks", "training_pairs", "conversations", "messages"]:
-            rows = conn.execute(f"SELECT * FROM {table}").fetchall()
-            data[table] = [dict(r) for r in rows]
-        conn.close()
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+        Args:
+            keywords: 用户输入的关键词，支持空格、逗号、分号分隔。
+            kb_id: 限定知识库ID，None 表示全部知识库。
+            match_mode: all=所有关键词都出现，any=任一关键词出现。
+            limit: 最大返回条数。
+        """
+        terms = [
+            t.strip()
+            for t in str(keywords).replace("，", " ").replace(",", " ").replace("；", " ").replace(";", " ").split()
+            if t.strip()
+        ]
+        if not terms:
+            return []
 
-    def export_to_sql(self, output_path: str):
-        conn = self.get_connection()
-        with open(output_path, "w", encoding="utf-8") as f:
-            for line in conn.iterdump():
-                f.write(f"{line}\n")
-        conn.close()
+        operator = " AND " if match_mode == "all" else " OR "
+        fts_query = operator.join([self._escape_fts_term(t) for t in terms])
+        like_operator = " AND " if match_mode == "all" else " OR "
+        like_clause = like_operator.join(["c.content LIKE ?" for _ in terms])
 
-    def import_from_json(self, json_path: str):
-        with open(json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
         conn = self.get_connection()
-        for table, rows in data.items():
-            if not rows:
-                continue
-            for row in rows:
-                cols = list(row.keys())
-                placeholders = ",".join("?" * len(cols))
-                vals = [row[c] for c in cols]
-                conn.execute(f"INSERT OR IGNORE INTO {table} ({','.join(cols)}) VALUES ({placeholders})", vals)
-        conn.commit()
-        conn.close()
-
-    def search_chunks(self, keyword: str, doc_id=None) -> list:
-        conn = self.get_connection()
+        rows = []
         try:
-            if doc_id:
-                rows = conn.execute(
-                    """SELECT c.*, d.original_name FROM chunks c
-                    JOIN documents d ON c.document_id=d.id
-                    WHERE c.id IN (SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?) AND c.document_id=?
-                    ORDER BY c.chunk_index""",
-                    (keyword, doc_id)
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """SELECT c.*, d.original_name FROM chunks c
+            params = [fts_query]
+            kb_clause = ""
+            if kb_id:
+                kb_clause = " AND d.kb_id=?"
+                params.append(kb_id)
+            params.append(limit)
+            rows = conn.execute(
+                f"""SELECT c.*, d.original_name, d.file_type, d.file_path, d.kb_id, d.total_chunks
+                    FROM chunks c
                     JOIN documents d ON c.document_id=d.id
                     WHERE c.id IN (SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?)
-                    ORDER BY c.document_id, c.chunk_index""",
-                    (keyword,)
-                ).fetchall()
+                    {kb_clause}
+                    ORDER BY d.original_name, c.chunk_index
+                    LIMIT ?""",
+                params,
+            ).fetchall()
         except Exception:
-            if doc_id:
-                rows = conn.execute(
-                    "SELECT c.*, d.original_name FROM chunks c JOIN documents d ON c.document_id=d.id WHERE c.content LIKE ? AND c.document_id=? ORDER BY c.chunk_index",
-                    (f"%{keyword}%", doc_id)
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT c.*, d.original_name FROM chunks c JOIN documents d ON c.document_id=d.id WHERE c.content LIKE ? ORDER BY c.document_id, c.chunk_index",
-                    (f"%{keyword}%",)
-                ).fetchall()
+            rows = []
+
+        if not rows:
+            params = [f"%{t}%" for t in terms]
+            kb_clause = ""
+            if kb_id:
+                kb_clause = " AND d.kb_id=?"
+                params.append(kb_id)
+            params.append(limit)
+            rows = conn.execute(
+                f"""SELECT c.*, d.original_name, d.file_type, d.file_path, d.kb_id, d.total_chunks
+                    FROM chunks c
+                    JOIN documents d ON c.document_id=d.id
+                    WHERE ({like_clause}) {kb_clause}
+                    ORDER BY d.original_name, c.chunk_index
+                    LIMIT ?""",
+                params,
+            ).fetchall()
         conn.close()
+
         result = []
         for r in rows:
-            d = dict(r)
-            if d["embedding"]:
-                d["embedding"] = np.frombuffer(d["embedding"], dtype=np.float32)
-            result.append(d)
+            item = dict(r)
+            item["matched_terms"] = [t for t in terms if t.lower() in item["content"].lower()]
+            item["snippet"] = self._make_snippet(item["content"], terms)
+            result.append(item)
         return result
+
+    def get_chunk_context(self, chunk_id: int, radius=1) -> dict:
+        """返回命中分块及前后相邻分块，供原文预览使用。"""
+        conn = self.get_connection()
+        row = conn.execute(
+            """SELECT c.*, d.original_name, d.file_type, d.file_path, d.total_chunks
+               FROM chunks c JOIN documents d ON c.document_id=d.id
+               WHERE c.id=?""",
+            (chunk_id,),
+        ).fetchone()
+        if not row:
+            conn.close()
+            return {}
+
+        chunk = dict(row)
+        start = max(0, chunk["chunk_index"] - radius)
+        end = chunk["chunk_index"] + radius
+        rows = conn.execute(
+            """SELECT * FROM chunks
+               WHERE document_id=? AND chunk_index BETWEEN ? AND ?
+               ORDER BY chunk_index""",
+            (chunk["document_id"], start, end),
+        ).fetchall()
+        conn.close()
+        chunk["context"] = [dict(r) for r in rows]
+        return chunk
+
+    @staticmethod
+    def _escape_fts_term(term: str) -> str:
+        escaped = str(term).replace('"', '""')
+        return f'"{escaped}"'
+
+    @staticmethod
+    def _make_snippet(content: str, terms: list, window=90) -> str:
+        text = content or ""
+        lower = text.lower()
+        positions = [lower.find(t.lower()) for t in terms if t and lower.find(t.lower()) >= 0]
+        if not positions:
+            return text[: window * 2] + ("..." if len(text) > window * 2 else "")
+        pos = min(positions)
+        start = max(0, pos - window)
+        end = min(len(text), pos + window)
+        prefix = "..." if start > 0 else ""
+        suffix = "..." if end < len(text) else ""
+        return prefix + text[start:end].strip() + suffix
 
     def get_document_content(self, doc_id) -> str:
         chunks = self.get_chunks_by_document(doc_id)
         return "\n\n".join([c["content"] for c in chunks])
-
-    def get_stats(self, kb_id=None) -> dict:
-        conn = self.get_connection()
-        if kb_id:
-            doc_count = conn.execute("SELECT COUNT(*) FROM documents WHERE kb_id=?", (kb_id,)).fetchone()[0]
-            chunk_count = conn.execute("SELECT COUNT(*) FROM chunks c JOIN documents d ON c.document_id=d.id WHERE d.kb_id=?", (kb_id,)).fetchone()[0]
-            total_size = conn.execute("SELECT COALESCE(SUM(file_size), 0) FROM documents WHERE kb_id=?", (kb_id,)).fetchone()[0]
-        else:
-            doc_count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
-            chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-            total_size = conn.execute("SELECT COALESCE(SUM(file_size), 0) FROM documents").fetchone()[0]
-        pair_count = conn.execute("SELECT COUNT(*) FROM training_pairs").fetchone()[0]
-        completed = conn.execute("SELECT COUNT(*) FROM documents WHERE status='completed'").fetchone()[0]
-        conv_count = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
-        msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-        conn.close()
-        return {
-            "document_count": doc_count,
-            "chunk_count": chunk_count,
-            "training_pair_count": pair_count,
-            "completed_documents": completed,
-            "conversation_count": conv_count,
-            "message_count": msg_count,
-            "total_size_bytes": total_size,
-            "total_size_mb": round(total_size / (1024 * 1024), 2)
-        }
 
     def create_knowledge_base(self, name, description="") -> int:
         conn = self.get_connection()
@@ -302,90 +252,6 @@ class DatabaseManager:
         conn.commit()
         conn.close()
         return True
-
-    def create_conversation(self, title="新对话", kb_id=None) -> int:
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO conversations (title, kb_id) VALUES (?, ?)", (title, kb_id))
-        conv_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return conv_id
-
-    def list_conversations(self) -> list:
-        conn = self.get_connection()
-        rows = conn.execute("SELECT * FROM conversations ORDER BY updated_at DESC").fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
-
-    def get_conversation(self, conv_id) -> dict:
-        conn = self.get_connection()
-        row = conn.execute("SELECT * FROM conversations WHERE id=?", (conv_id,)).fetchone()
-        conn.close()
-        return dict(row) if row else None
-
-    def delete_conversation(self, conv_id) -> bool:
-        conn = self.get_connection()
-        conn.execute("DELETE FROM messages WHERE conversation_id=?", (conv_id,))
-        conn.execute("DELETE FROM conversations WHERE id=?", (conv_id,))
-        conn.commit()
-        conn.close()
-        return True
-
-    def add_message(self, conversation_id, role, content, sources=None) -> int:
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        import json
-        cursor.execute(
-            "INSERT INTO messages (conversation_id, role, content, sources) VALUES (?, ?, ?, ?)",
-            (conversation_id, role, content, json.dumps(sources) if sources else None)
-        )
-        msg_id = cursor.lastrowid
-        conn.execute("UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (conversation_id,))
-        conn.commit()
-        conn.close()
-        return msg_id
-
-    def get_messages(self, conversation_id) -> list:
-        conn = self.get_connection()
-        rows = conn.execute("SELECT * FROM messages WHERE conversation_id=? ORDER BY created_at", (conversation_id,)).fetchall()
-        conn.close()
-        import json
-        result = []
-        for r in rows:
-            d = dict(r)
-            if d["sources"]:
-                d["sources"] = json.loads(d["sources"])
-            result.append(d)
-        return result
-
-    def save_batch_result(self, batch_id, question, answer, sources=None) -> int:
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        import json
-        cursor.execute(
-            "INSERT INTO batch_results (batch_id, question, answer, sources) VALUES (?, ?, ?, ?)",
-            (batch_id, question, answer, json.dumps(sources) if sources else None)
-        )
-        rid = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return rid
-
-    def get_batch_results(self, batch_id) -> list:
-        conn = self.get_connection()
-        rows = conn.execute("SELECT * FROM batch_results WHERE batch_id=? ORDER BY id", (batch_id,)).fetchall()
-        conn.close()
-        import json
-        result = []
-        for r in rows:
-            d = dict(r)
-            if d["sources"]:
-                d["sources"] = json.loads(d["sources"])
-            result.append(d)
-        return result
-
-
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS knowledge_bases (
@@ -417,57 +283,13 @@ CREATE TABLE IF NOT EXISTS chunks (
     chunk_index INTEGER NOT NULL,
     content TEXT NOT NULL,
     token_count INTEGER,
-    embedding BLOB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS training_pairs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    question TEXT NOT NULL,
-    answer TEXT NOT NULL,
-    source_chunk_ids TEXT,
-    document_id INTEGER,
-    is_generated INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL
-);
-
-CREATE TABLE IF NOT EXISTS conversations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT DEFAULT '新对话',
-    kb_id INTEGER,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (kb_id) REFERENCES knowledge_bases(id) ON DELETE SET NULL
-);
-
-CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    conversation_id INTEGER NOT NULL,
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    sources TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS batch_results (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    batch_id TEXT NOT NULL,
-    question TEXT NOT NULL,
-    answer TEXT,
-    sources TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
-CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON chunks(id);
-CREATE INDEX IF NOT EXISTS idx_training_pairs_document_id ON training_pairs(document_id);
 CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
 CREATE INDEX IF NOT EXISTS idx_documents_kb_id ON documents(kb_id);
-CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
-CREATE INDEX IF NOT EXISTS idx_batch_results_batch_id ON batch_results(batch_id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(content, document_id, content=chunks, content_rowid=id);
 CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN

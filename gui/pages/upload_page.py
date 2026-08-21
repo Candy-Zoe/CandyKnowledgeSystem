@@ -37,8 +37,8 @@ class UploadPage(QWidget):
         kb_row.addStretch()
         layout.addLayout(kb_row)
 
-        # CPU 节流设置
-        cpu_group = QGroupBox("性能设置")
+        # 解析设置
+        cpu_group = QGroupBox("解析设置")
         cpu_group.setStyleSheet("""
             QGroupBox {
                 border: 1px solid #45475a;
@@ -56,14 +56,6 @@ class UploadPage(QWidget):
         cpu_layout = QFormLayout(cpu_group)
 
         settings = config.load_settings()
-
-        # CPU 线程数
-        self.threads_spin = QSpinBox()
-        self.threads_spin.setRange(1, 16)
-        self.threads_spin.setValue(settings.get("torch_threads", 2))
-        self.threads_spin.setSuffix(" 线程")
-        self.threads_spin.setToolTip("限制 PyTorch 线程数，值越小 CPU 占用越低")
-        cpu_layout.addRow("CPU 线程数:", self.threads_spin)
 
         # 页面休眠时间
         self.sleep_spin = QSpinBox()
@@ -83,12 +75,22 @@ class UploadPage(QWidget):
         self.max_pages_spin.setToolTip("超过此页数的 PDF 只处理前 N 页（0=不限制）")
         cpu_layout.addRow("PDF 最大页数:", self.max_pages_spin)
 
-        # 嵌入批次大小
-        self.batch_spin = QSpinBox()
-        self.batch_spin.setRange(1, 128)
-        self.batch_spin.setValue(settings.get("embedding_batch_size", 16))
-        self.batch_spin.setToolTip("嵌入生成批次大小，值越小内存占用越低")
-        cpu_layout.addRow("嵌入批次:", self.batch_spin)
+        # 分块大小
+        self.chunk_size_spin = QSpinBox()
+        self.chunk_size_spin.setRange(128, 4096)
+        self.chunk_size_spin.setSingleStep(128)
+        self.chunk_size_spin.setValue(settings.get("chunk_size", config.CHUNK_SIZE))
+        self.chunk_size_spin.setSuffix(" token")
+        self.chunk_size_spin.setToolTip("解析后的文本按此大小分块，便于关键词定位原文")
+        cpu_layout.addRow("分块大小:", self.chunk_size_spin)
+
+        # 分块重叠
+        self.chunk_overlap_spin = QSpinBox()
+        self.chunk_overlap_spin.setRange(0, 512)
+        self.chunk_overlap_spin.setSingleStep(16)
+        self.chunk_overlap_spin.setValue(settings.get("chunk_overlap", config.CHUNK_OVERLAP))
+        self.chunk_overlap_spin.setSuffix(" token")
+        cpu_layout.addRow("分块重叠:", self.chunk_overlap_spin)
 
         layout.addWidget(cpu_group)
 
@@ -134,20 +136,22 @@ class UploadPage(QWidget):
 
     def load_knowledge_bases(self):
         self.kb_combo.clear()
-        self.kb_combo.addItem("默认知识库", None)
         try:
             db = DatabaseManager(str(config.DB_PATH))
-            for kb in db.list_knowledge_bases():
+            kbs = db.list_knowledge_bases()
+            for kb in kbs:
                 self.kb_combo.addItem(kb["name"], kb["id"])
+            if not kbs:
+                self.kb_combo.addItem("默认知识库", None)
         except Exception:
-            pass
+            self.kb_combo.addItem("默认知识库", None)
 
     def _save_settings(self):
         settings = config.load_settings()
-        settings["torch_threads"] = self.threads_spin.value()
         settings["page_sleep_ms"] = self.sleep_spin.value()
         settings["max_pdf_pages"] = self.max_pages_spin.value()
-        settings["embedding_batch_size"] = self.batch_spin.value()
+        settings["chunk_size"] = self.chunk_size_spin.value()
+        settings["chunk_overlap"] = self.chunk_overlap_spin.value()
         config.save_settings(settings)
 
     def select_files(self):

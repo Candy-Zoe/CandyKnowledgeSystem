@@ -1,5 +1,4 @@
 import re
-import math
 import tiktoken
 
 
@@ -44,9 +43,9 @@ class TextProcessor:
                 "content": chunk_text,
                 "token_count": len(chunk_tokens)
             })
-            start = end - self.chunk_overlap
-            if start >= len(tokens):
+            if end >= len(tokens):
                 break
+            start = end - self.chunk_overlap
         for i, chunk in enumerate(chunks):
             chunk["chunk_index"] = i
         return chunks
@@ -218,63 +217,3 @@ class TextProcessor:
         for i, chunk in enumerate(chunks):
             chunk["chunk_index"] = i
         return chunks
-
-    def extract_keywords(self, text: str, top_n=10) -> list:
-        words = re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z]+', text)
-        freq = {}
-        for w in words:
-            if len(w) > 1:
-                freq[w] = freq.get(w, 0) + 1
-        sorted_words = sorted(freq.items(), key=lambda x: x[1], reverse=True)
-        return [w for w, _ in sorted_words[:top_n]]
-
-    def generate_training_pairs(self, chunks: list, num_questions=3) -> list:
-        pairs = []
-        for chunk in chunks:
-            content = chunk["content"]
-            if len(content) < 50:
-                continue
-
-            sentences = [s.strip() for s in re.split(r'[。！？\n]', content) if len(s.strip()) > 10]
-
-            if not sentences:
-                continue
-
-            summary_a = "。".join(sentences[:3]) + "。" if len(sentences) >= 3 else "。".join(sentences) + "。"
-            pairs.append({
-                "question": "请总结以下内容的要点：",
-                "answer": summary_a,
-                "source_chunk_ids": [chunk.get("id")]
-            })
-
-            if len(sentences) >= 2:
-                pairs.append({
-                    "question": "关于%s，主要讲了什么？" % sentences[0][:30],
-                    "answer": "。".join(sentences[:2]) + "。",
-                    "source_chunk_ids": [chunk.get("id")]
-                })
-
-            keywords = self.extract_keywords(content, top_n=5)
-            if keywords:
-                kw = "、".join(keywords[:3])
-                pairs.append({
-                    "question": "请解释%s的相关内容" % kw,
-                    "answer": summary_a,
-                    "source_chunk_ids": [chunk.get("id")]
-                })
-
-            if len(sentences) >= 4:
-                pairs.append({
-                    "question": "请详细说明%s的具体内容" % sentences[0][:20],
-                    "answer": "。".join(sentences[:5]) + "。",
-                    "source_chunk_ids": [chunk.get("id")]
-                })
-
-            if len(sentences) >= 3:
-                pairs.append({
-                    "question": "这段内容的核心观点是什么？",
-                    "answer": "。".join(sentences[:2]) + "。",
-                    "source_chunk_ids": [chunk.get("id")]
-                })
-
-        return pairs

@@ -645,7 +645,17 @@ class PDFParser:
         if not self._validate_file(file_path, result):
             return result
 
-        # 第一层：PyMuPDF
+        # 第一层：纯Python自实现解析
+        try:
+            pure_parser = _PurePythonPDFParser()
+            pure_result = pure_parser.parse(file_path)
+            if not pure_result.is_empty:
+                return pure_result
+            result.errors.extend(pure_result.errors)
+        except Exception as e:
+            result.errors.append(f"纯Python解析失败: {e}")
+
+        # 第二层：PyMuPDF兼容回退
         try:
             result = self._parse_with_pymupdf(file_path, result)
             if not result.is_empty:
@@ -655,7 +665,7 @@ class PDFParser:
         except Exception as e:
             result.errors.append(f"PyMuPDF解析失败: {e}")
 
-        # 第二层：pdfplumber
+        # 第三层：pdfplumber兼容回退
         try:
             result = self._parse_with_pdfplumber(file_path, result)
             if not result.is_empty:
@@ -664,16 +674,6 @@ class PDFParser:
             result.warnings.append("pdfplumber 未安装，跳过")
         except Exception as e:
             result.errors.append(f"pdfplumber解析失败: {e}")
-
-        # 第三层：纯Python回退
-        try:
-            pure_parser = _PurePythonPDFParser()
-            pure_result = pure_parser.parse(file_path)
-            if not pure_result.is_empty:
-                return pure_result
-            result.errors.extend(pure_result.errors)
-        except Exception as e:
-            result.errors.append(f"纯Python解析失败: {e}")
 
         # 第四层：OCR
         if self.use_ocr and result.is_empty:
